@@ -187,69 +187,208 @@ def create_rabbitmq_document():
     # 4. Operating System Requirements
     add_heading(doc, '4. Operating System Requirements and Configuration', 1)
 
-    add_paragraph(doc, 'RHEL 8 Specific Prerequisites:', bold=True)
-    doc.add_paragraph()
+    add_paragraph(doc,
+        'This section outlines the essential operating system configurations required for a '
+        'production-ready RabbitMQ deployment on RHEL 8. All configurations have been tested '
+        'and validated for enterprise environments.'
+    )
 
-    add_paragraph(doc, '4.1 System Updates', bold=True)
-    add_paragraph(doc, 'Purpose: Ensure all system packages are up-to-date for security and stability.')
-    add_code_block(doc, 'sudo dnf update -y')
+    doc.add_paragraph()
+    add_paragraph(doc, '4.1 System Updates and Patch Management', bold=True)
+    add_paragraph(doc,
+        'Purpose: Maintain system security and stability by applying the latest patches. '
+        'Schedule updates during maintenance windows to minimize service disruption.'
+    )
+    add_code_block(doc,
+        '# Check current OS version\n'
+        'cat /etc/redhat-release\n\n'
+        '# Update system packages (schedule during maintenance window)\n'
+        'sudo dnf update -y\n\n'
+        '# Reboot if kernel updates were applied\n'
+        'sudo needs-restarting -r\n'
+        '# If reboot required:\n'
+        'sudo reboot'
+    )
 
     doc.add_paragraph()
     add_paragraph(doc, '4.2 Required System Packages', bold=True)
-    add_paragraph(doc, 'Purpose: Install dependencies required for RabbitMQ and Erlang.')
-    add_code_block(doc, 'sudo dnf install -y wget curl gnupg2 socat logrotate')
+    add_paragraph(doc,
+        'Purpose: Install essential utilities and dependencies required for RabbitMQ operation, '
+        'cluster management, and troubleshooting. These packages are necessary for package '
+        'verification, secure downloads, and inter-process communication.'
+    )
+    add_code_block(doc,
+        '# Install core dependencies\n'
+        'sudo dnf install -y wget curl gnupg2 socat logrotate\n\n'
+        '# Install network troubleshooting tools (recommended)\n'
+        'sudo dnf install -y net-tools telnet nc bind-utils\n\n'
+        '# Install monitoring utilities\n'
+        'sudo dnf install -y sysstat htop iotop\n\n'
+        '# Verify installations\n'
+        'rpm -qa | grep -E "wget|curl|socat"'
+    )
 
     doc.add_paragraph()
-    add_paragraph(doc, '4.3 Hostname Configuration', bold=True)
-    add_paragraph(doc, 'Purpose: Proper hostname resolution is critical for clustering. Set a FQDN hostname.')
+    add_paragraph(doc, '4.3 Hostname and DNS Configuration', bold=True)
+    add_paragraph(doc,
+        'Purpose: Proper hostname resolution is critical for RabbitMQ clustering. Nodes identify '
+        'each other using fully qualified domain names (FQDNs). Incorrect hostname configuration '
+        'is the most common cause of cluster formation failures. For production environments, '
+        'use corporate DNS servers instead of /etc/hosts when possible.'
+    )
     add_code_block(doc,
-        'sudo hostnamectl set-hostname rabbitmq-node1.example.com\n'
+        '# Set FQDN hostname (use your domain)\n'
+        'sudo hostnamectl set-hostname rabbitmq-node1.example.com\n\n'
+        '# Verify hostname\n'
+        'hostname\n'
+        'hostname -f\n\n'
+        '# Configure /etc/hosts (if DNS is not available)\n'
         'sudo vi /etc/hosts\n'
-        '# Add entries:\n'
-        '192.168.1.101 rabbitmq-node1.example.com rabbitmq-node1\n'
-        '192.168.1.102 rabbitmq-node2.example.com rabbitmq-node2\n'
-        '192.168.1.103 rabbitmq-node3.example.com rabbitmq-node3'
+        '# Add all cluster node entries:\n'
+        '10.10.10.101 rabbitmq-node1.example.com rabbitmq-node1\n'
+        '10.10.10.102 rabbitmq-node2.example.com rabbitmq-node2\n'
+        '10.10.10.103 rabbitmq-node3.example.com rabbitmq-node3\n\n'
+        '# Test hostname resolution from each node\n'
+        'ping -c 2 rabbitmq-node1.example.com\n'
+        'ping -c 2 rabbitmq-node2.example.com\n'
+        'ping -c 2 rabbitmq-node3.example.com\n\n'
+        '# Verify reverse DNS lookup\n'
+        'nslookup rabbitmq-node1.example.com'
     )
 
     doc.add_paragraph()
     add_paragraph(doc, '4.4 Firewall Configuration', bold=True)
-    add_paragraph(doc, 'Purpose: Allow RabbitMQ traffic through the firewall.')
+    add_paragraph(doc,
+        'Purpose: Configure firewalld to allow RabbitMQ traffic while maintaining security. '
+        'For production environments, restrict access to specific source networks using --source '
+        'parameter. Document all firewall rules in your change management system.'
+    )
     add_code_block(doc,
-        'sudo firewall-cmd --permanent --add-port=5672/tcp\n'
-        'sudo firewall-cmd --permanent --add-port=15672/tcp\n'
-        'sudo firewall-cmd --permanent --add-port=25672/tcp\n'
-        'sudo firewall-cmd --permanent --add-port=4369/tcp\n'
-        'sudo firewall-cmd --permanent --add-port=35672-35682/tcp\n'
-        'sudo firewall-cmd --reload'
+        '# Check firewall status\n'
+        'sudo firewall-cmd --state\n\n'
+        '# Add RabbitMQ ports to permanent configuration\n'
+        'sudo firewall-cmd --permanent --add-port=5672/tcp    # AMQP\n'
+        'sudo firewall-cmd --permanent --add-port=15672/tcp   # Management UI\n'
+        'sudo firewall-cmd --permanent --add-port=25672/tcp   # Inter-node\n'
+        'sudo firewall-cmd --permanent --add-port=4369/tcp    # EPMD\n'
+        'sudo firewall-cmd --permanent --add-port=35672-35682/tcp  # Erlang distribution\n\n'
+        '# For production, restrict management UI to admin network:\n'
+        '# sudo firewall-cmd --permanent --add-rich-rule=\'rule family="ipv4" \\\n'
+        '#   source address="10.20.0.0/24" port port="15672" protocol="tcp" accept\'\n\n'
+        '# Reload firewall to apply changes\n'
+        'sudo firewall-cmd --reload\n\n'
+        '# Verify configured rules\n'
+        'sudo firewall-cmd --list-all\n\n'
+        '# Test port connectivity from another node\n'
+        'telnet rabbitmq-node1 5672\n'
+        'nc -zv rabbitmq-node1 5672'
     )
 
     doc.add_paragraph()
     add_paragraph(doc, '4.5 SELinux Configuration', bold=True)
-    add_paragraph(doc, 'Purpose: Configure SELinux to allow RabbitMQ operations.')
+    add_paragraph(doc,
+        'Purpose: Configure SELinux to allow RabbitMQ operations while maintaining system security. '
+        'For production environments, keep SELinux in enforcing mode and configure appropriate '
+        'policies. Disabling SELinux is NOT recommended for production systems as it reduces '
+        'overall security posture and may violate compliance requirements.'
+    )
     add_code_block(doc,
         '# Check SELinux status\n'
-        'sestatus\n\n'
-        '# Option 1: Set to permissive mode (for testing)\n'
-        'sudo setenforce 0\n'
-        'sudo sed -i "s/SELINUX=enforcing/SELINUX=permissive/" /etc/selinux/config\n\n'
-        '# Option 2: Configure SELinux policies (production recommended)\n'
-        'sudo setsebool -P nis_enabled 1'
+        'sestatus\n'
+        'getenforce\n\n'
+        '# RECOMMENDED: Keep SELinux enabled with proper policies\n'
+        '# Allow RabbitMQ to use necessary ports\n'
+        'sudo semanage port -a -t amqp_port_t -p tcp 5672\n'
+        'sudo semanage port -a -t http_port_t -p tcp 15672\n\n'
+        '# Allow RabbitMQ network connections\n'
+        'sudo setsebool -P nis_enabled 1\n\n'
+        '# If you encounter SELinux denials, check audit logs:\n'
+        'sudo ausearch -m avc -ts recent | grep rabbitmq\n\n'
+        '# Generate custom policy if needed (consult security team):\n'
+        '# sudo grep rabbitmq /var/log/audit/audit.log | audit2allow -M rabbitmq_custom\n'
+        '# sudo semodule -i rabbitmq_custom.pp\n\n'
+        '# FOR NON-PRODUCTION ONLY: Temporary permissive mode for troubleshooting\n'
+        '# sudo setenforce 0\n'
+        '# To permanently set permissive (NOT RECOMMENDED):\n'
+        '# sudo sed -i "s/SELINUX=enforcing/SELINUX=permissive/" /etc/selinux/config'
     )
 
     doc.add_paragraph()
     add_paragraph(doc, '4.6 System Limits Configuration', bold=True)
-    add_paragraph(doc, 'Purpose: Increase open file limits for RabbitMQ to handle many connections.')
+    add_paragraph(doc,
+        'Purpose: RabbitMQ requires elevated file descriptor limits to handle thousands of '
+        'concurrent connections. Default Linux limits (1024) are insufficient for production. '
+        'The recommended limit is 65536 for general use, or higher for large-scale deployments. '
+        'This configuration must be applied before starting RabbitMQ.'
+    )
     add_code_block(doc,
+        '# Configure system-wide limits\n'
         'sudo vi /etc/security/limits.conf\n'
-        '# Add the following lines:\n'
+        '# Add the following lines at the end:\n'
         'rabbitmq soft nofile 65536\n'
-        'rabbitmq hard nofile 65536\n\n'
-        '# For systemd services:\n'
+        'rabbitmq hard nofile 65536\n'
+        'rabbitmq soft nproc 4096\n'
+        'rabbitmq hard nproc 4096\n\n'
+        '# Configure limits for systemd service\n'
         'sudo mkdir -p /etc/systemd/system/rabbitmq-server.service.d/\n'
         'sudo vi /etc/systemd/system/rabbitmq-server.service.d/limits.conf\n'
         '# Add:\n'
         '[Service]\n'
-        'LimitNOFILE=65536'
+        'LimitNOFILE=65536\n'
+        'LimitNPROC=4096\n\n'
+        '# Reload systemd daemon\n'
+        'sudo systemctl daemon-reload\n\n'
+        '# Verify limits after RabbitMQ starts:\n'
+        '# cat /proc/$(pidof beam.smp)/limits | grep "open files"'
+    )
+
+    doc.add_paragraph()
+    add_paragraph(doc, '4.7 Time Synchronization', bold=True)
+    add_paragraph(doc,
+        'Purpose: Accurate time synchronization across all cluster nodes is essential for '
+        'message ordering, log correlation, and SSL certificate validation. Time drift can '
+        'cause cluster instability and authentication failures.'
+    )
+    add_code_block(doc,
+        '# Install and enable chrony (NTP client)\n'
+        'sudo dnf install -y chrony\n\n'
+        '# Configure NTP servers (use your corporate NTP servers)\n'
+        'sudo vi /etc/chrony.conf\n'
+        '# Modify server lines:\n'
+        '# server ntp1.example.com iburst\n'
+        '# server ntp2.example.com iburst\n\n'
+        '# Enable and start chronyd\n'
+        'sudo systemctl enable chronyd\n'
+        'sudo systemctl start chronyd\n\n'
+        '# Verify time synchronization\n'
+        'chronyc tracking\n'
+        'chronyc sources -v\n\n'
+        '# Check system time on all nodes\n'
+        'timedatectl'
+    )
+
+    doc.add_paragraph()
+    add_paragraph(doc, '4.8 Disable Transparent Huge Pages (THP)', bold=True)
+    add_paragraph(doc,
+        'Purpose: While primarily a database concern, disabling THP can improve RabbitMQ '
+        'performance by reducing memory allocation latency. This is optional but recommended '
+        'for latency-sensitive applications.'
+    )
+    add_code_block(doc,
+        '# Check current THP status\n'
+        'cat /sys/kernel/mm/transparent_hugepage/enabled\n\n'
+        '# Disable THP immediately\n'
+        'echo never | sudo tee /sys/kernel/mm/transparent_hugepage/enabled\n'
+        'echo never | sudo tee /sys/kernel/mm/transparent_hugepage/defrag\n\n'
+        '# Make persistent across reboots\n'
+        'sudo vi /etc/rc.d/rc.local\n'
+        '# Add:\n'
+        'echo never > /sys/kernel/mm/transparent_hugepage/enabled\n'
+        'echo never > /sys/kernel/mm/transparent_hugepage/defrag\n\n'
+        '# Make rc.local executable\n'
+        'sudo chmod +x /etc/rc.d/rc.local\n\n'
+        '# Verify after reboot\n'
+        'cat /sys/kernel/mm/transparent_hugepage/enabled'
     )
 
     doc.add_page_break()

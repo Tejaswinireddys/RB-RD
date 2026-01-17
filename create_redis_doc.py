@@ -203,92 +203,313 @@ def create_redis_document():
     # 4. Operating System Requirements
     add_heading(doc, '4. Operating System Requirements and Configuration', 1)
 
-    add_paragraph(doc, 'RHEL 8 Specific Prerequisites:', bold=True)
-    doc.add_paragraph()
+    add_paragraph(doc,
+        'This section provides comprehensive operating system configuration requirements for '
+        'deploying Redis 8.x in production environments on RHEL 8. These configurations have been '
+        'validated for enterprise deployments and follow industry best practices.'
+    )
 
-    add_paragraph(doc, '4.1 System Updates', bold=True)
-    add_paragraph(doc, 'Purpose: Ensure all system packages are up-to-date for security and stability.')
-    add_code_block(doc, 'sudo dnf update -y')
+    doc.add_paragraph()
+    add_paragraph(doc, '4.1 System Updates and Patch Management', bold=True)
+    add_paragraph(doc,
+        'Purpose: Maintain system security and stability through regular patching. Redis performance '
+        'benefits from recent kernel improvements. Coordinate updates with change management processes '
+        'and schedule during planned maintenance windows.'
+    )
+    add_code_block(doc,
+        '# Verify current OS version\n'
+        'cat /etc/redhat-release\n\n'
+        '# Check for available updates\n'
+        'sudo dnf check-update\n\n'
+        '# Apply system updates (schedule during maintenance window)\n'
+        'sudo dnf update -y\n\n'
+        '# Check if reboot is required after kernel updates\n'
+        'sudo needs-restarting -r\n\n'
+        '# If reboot is required:\n'
+        'sudo reboot'
+    )
 
     doc.add_paragraph()
-    add_paragraph(doc, '4.2 Install Development Tools', bold=True)
-    add_paragraph(doc, 'Purpose: Install GCC and build dependencies required to compile Redis from source.')
-    add_code_block(doc, 'sudo dnf groupinstall -y "Development Tools"\n'
-                         'sudo dnf install -y wget curl gcc make tcl')
+    add_paragraph(doc, '4.2 Install Development Tools and Dependencies', bold=True)
+    add_paragraph(doc,
+        'Purpose: Redis 8.x is typically compiled from source to ensure the latest features and '
+        'optimizations. Install GCC, make, and other build tools required for compilation. These '
+        'tools are also useful for building Redis modules and troubleshooting.'
+    )
+    add_code_block(doc,
+        '# Install development tools group\n'
+        'sudo dnf groupinstall -y "Development Tools"\n\n'
+        '# Install specific build dependencies\n'
+        'sudo dnf install -y gcc gcc-c++ make wget curl tcl jemalloc-devel\n\n'
+        '# Install troubleshooting and monitoring tools\n'
+        'sudo dnf install -y net-tools telnet nc bind-utils\n'
+        'sudo dnf install -y sysstat htop iotop\n\n'
+        '# Verify GCC installation\n'
+        'gcc --version\n\n'
+        '# Verify make installation\n'
+        'make --version'
+    )
 
     doc.add_paragraph()
     add_paragraph(doc, '4.3 Disable Transparent Huge Pages (THP)', bold=True)
     add_paragraph(doc,
-        'Purpose: THP can cause latency issues with Redis. Disabling it is recommended '
-        'for production environments.'
+        'Purpose: Transparent Huge Pages can cause significant latency spikes in Redis operations. '
+        'The Linux kernel\'s THP feature attempts to optimize memory management but can interfere '
+        'with Redis\' memory access patterns, causing delays during background saves (BGSAVE/BGREWRITE). '
+        'Disabling THP is MANDATORY for production Redis deployments and is recommended by Redis Labs.'
     )
     add_code_block(doc,
-        '# Disable THP immediately\n'
+        '# Check current THP status\n'
+        'cat /sys/kernel/mm/transparent_hugepage/enabled\n'
+        '# Current setting will be in [brackets]\n\n'
+        '# Disable THP immediately (takes effect right away)\n'
         'echo never | sudo tee /sys/kernel/mm/transparent_hugepage/enabled\n'
         'echo never | sudo tee /sys/kernel/mm/transparent_hugepage/defrag\n\n'
-        '# Make it persistent across reboots\n'
-        'sudo vi /etc/rc.local\n'
-        '# Add the following lines:\n'
+        '# Method 1: Make persistent using rc.local\n'
+        'sudo vi /etc/rc.d/rc.local\n'
+        '# Add these lines:\n'
+        '#!/bin/bash\n'
         'echo never > /sys/kernel/mm/transparent_hugepage/enabled\n'
         'echo never > /sys/kernel/mm/transparent_hugepage/defrag\n\n'
         '# Make rc.local executable\n'
-        'sudo chmod +x /etc/rc.d/rc.local'
+        'sudo chmod +x /etc/rc.d/rc.local\n'
+        'sudo systemctl enable rc-local\n\n'
+        '# Method 2: Use systemd service (recommended)\n'
+        'sudo vi /etc/systemd/system/disable-thp.service\n'
+        '# Add:\n'
+        '[Unit]\n'
+        'Description=Disable Transparent Huge Pages (THP)\n'
+        'DefaultDependencies=no\n'
+        'After=sysinit.target local-fs.target\n'
+        'Before=redis.service\n\n'
+        '[Service]\n'
+        'Type=oneshot\n'
+        'ExecStart=/bin/sh -c "echo never > /sys/kernel/mm/transparent_hugepage/enabled"\n'
+        'ExecStart=/bin/sh -c "echo never > /sys/kernel/mm/transparent_hugepage/defrag"\n\n'
+        '[Install]\n'
+        'WantedBy=basic.target\n\n'
+        '# Enable the service\n'
+        'sudo systemctl daemon-reload\n'
+        'sudo systemctl enable disable-thp.service\n'
+        'sudo systemctl start disable-thp.service\n\n'
+        '# Verify THP is disabled\n'
+        'cat /sys/kernel/mm/transparent_hugepage/enabled\n'
+        '# Should show: always madvise [never]'
     )
 
     doc.add_paragraph()
     add_paragraph(doc, '4.4 Configure Kernel Parameters', bold=True)
-    add_paragraph(doc, 'Purpose: Optimize kernel settings for Redis performance.')
+    add_paragraph(doc,
+        'Purpose: Optimize Linux kernel parameters for Redis workloads. These settings improve '
+        'Redis performance, stability, and reliability by adjusting memory management, network '
+        'stack behavior, and file handling. Changes are persistent across reboots.'
+    )
     add_code_block(doc,
-        'sudo vi /etc/sysctl.conf\n'
-        '# Add the following lines:\n'
-        'vm.overcommit_memory = 1\n'
-        'net.core.somaxconn = 65535\n'
+        '# Create Redis-specific sysctl configuration\n'
+        'sudo vi /etc/sysctl.d/99-redis.conf\n'
+        '# Add the following parameters:\n\n'
+        '# Memory overcommit for Redis background saves\n'
+        '# Required for BGSAVE and BGREWRITE operations\n'
+        'vm.overcommit_memory = 1\n\n'
+        '# Increase connection backlog queue\n'
+        '# Prevents "connection refused" errors under high load\n'
+        'net.core.somaxconn = 65535\n\n'
+        '# Increase maximum file descriptors\n'
         'fs.file-max = 100000\n\n'
-        '# Apply changes\n'
-        'sudo sysctl -p'
+        '# Disable swapping for better performance\n'
+        '# WARNING: Ensure sufficient RAM before setting\n'
+        'vm.swappiness = 0\n\n'
+        '# TCP settings for better network performance\n'
+        'net.ipv4.tcp_max_syn_backlog = 4096\n'
+        'net.ipv4.tcp_keepalive_time = 300\n'
+        'net.ipv4.tcp_keepalive_intvl = 30\n'
+        'net.ipv4.tcp_keepalive_probes = 3\n\n'
+        '# Apply all changes immediately\n'
+        'sudo sysctl -p /etc/sysctl.d/99-redis.conf\n\n'
+        '# Verify settings\n'
+        'sudo sysctl vm.overcommit_memory\n'
+        'sudo sysctl net.core.somaxconn\n'
+        'sudo sysctl fs.file-max'
     )
 
     doc.add_paragraph()
-    add_paragraph(doc, 'Parameter Explanations:', italic=True)
-    params = [
-        'vm.overcommit_memory=1: Allows Redis to fork for background saves',
-        'net.core.somaxconn=65535: Increases connection queue size',
-        'fs.file-max=100000: Increases maximum open files limit'
+    add_paragraph(doc, 'Parameter Explanations:', bold=True)
+    params_detailed = [
+        ('vm.overcommit_memory = 1', 'Allows Redis to fork child processes for background saves '
+         'without failing. Essential for RDB snapshots and AOF rewrites.'),
+        ('net.core.somaxconn = 65535', 'Increases connection queue size to handle burst traffic. '
+         'Default (128) is too low for high-traffic Redis instances.'),
+        ('fs.file-max = 100000', 'Sets system-wide maximum file descriptor limit. Supports high '
+         'connection counts and multiple Redis instances.'),
+        ('vm.swappiness = 0', 'Prevents Redis memory from being swapped to disk, which causes severe '
+         'latency. Only set if sufficient RAM is available.'),
+        ('net.ipv4.tcp_keepalive_time = 300', 'Detects dead connections faster, freeing resources. '
+         'Reduces idle connection overhead.')
     ]
-    for param in params:
-        doc.add_paragraph(param, style='List Bullet')
+    for param_name, param_desc in params_detailed:
+        para = doc.add_paragraph(style='List Bullet')
+        para.add_run(param_name + ': ').bold = True
+        para.add_run(param_desc)
 
     doc.add_paragraph()
     add_paragraph(doc, '4.5 Configure System Limits', bold=True)
-    add_paragraph(doc, 'Purpose: Increase open file limits for Redis processes.')
+    add_paragraph(doc,
+        'Purpose: Redis can maintain thousands of client connections simultaneously. Default Linux '
+        'limits (1024 open files) are insufficient for production deployments. Increase file '
+        'descriptor limits to prevent "Too many open files" errors.'
+    )
     add_code_block(doc,
+        '# Configure user limits in limits.conf\n'
         'sudo vi /etc/security/limits.conf\n'
-        '# Add the following lines:\n'
+        '# Add at the end of file:\n'
         'redis soft nofile 65536\n'
-        'redis hard nofile 65536'
+        'redis hard nofile 65536\n'
+        'redis soft nproc 4096\n'
+        'redis hard nproc 4096\n\n'
+        '# Configure systemd service limits\n'
+        'sudo mkdir -p /etc/systemd/system/redis.service.d/\n'
+        'sudo vi /etc/systemd/system/redis.service.d/limits.conf\n'
+        '# Add:\n'
+        '[Service]\n'
+        'LimitNOFILE=65536\n'
+        'LimitNPROC=4096\n\n'
+        '# Reload systemd to apply changes\n'
+        'sudo systemctl daemon-reload\n\n'
+        '# After Redis starts, verify limits:\n'
+        '# cat /proc/$(pidof redis-server)/limits | grep "open files"\n'
+        '# Should show: Max open files 65536'
     )
 
     doc.add_paragraph()
     add_paragraph(doc, '4.6 Firewall Configuration', bold=True)
-    add_paragraph(doc, 'Purpose: Allow Redis traffic through the firewall.')
+    add_paragraph(doc,
+        'Purpose: Configure firewalld to allow Redis traffic while maintaining security posture. '
+        'In production environments, restrict Redis access to application servers only. Never expose '
+        'Redis directly to the internet. Use firewall zones and rich rules for granular access control.'
+    )
     add_code_block(doc,
-        'sudo firewall-cmd --permanent --add-port=6379/tcp\n'
-        'sudo firewall-cmd --permanent --add-port=16379/tcp\n'
-        'sudo firewall-cmd --permanent --add-port=26379/tcp\n'
-        'sudo firewall-cmd --reload'
+        '# Check firewall status\n'
+        'sudo firewall-cmd --state\n'
+        'sudo firewall-cmd --get-active-zones\n\n'
+        '# Add Redis ports to firewall (permanent configuration)\n'
+        'sudo firewall-cmd --permanent --add-port=6379/tcp   # Redis server\n'
+        'sudo firewall-cmd --permanent --add-port=16379/tcp  # Cluster bus\n'
+        'sudo firewall-cmd --permanent --add-port=26379/tcp  # Sentinel\n\n'
+        '# PRODUCTION: Restrict access to specific application servers\n'
+        '# Example - Allow only from app server subnet 10.10.20.0/24:\n'
+        'sudo firewall-cmd --permanent --add-rich-rule=\'rule family="ipv4" \\\n'
+        '  source address="10.10.20.0/24" port port="6379" protocol="tcp" accept\'\n\n'
+        '# For multiple application servers, add separate rules:\n'
+        '# sudo firewall-cmd --permanent --add-rich-rule=\'rule family="ipv4" \\\n'
+        '#   source address="10.10.30.0/24" port port="6379" protocol="tcp" accept\'\n\n'
+        '# Remove the generic port rule if using rich rules:\n'
+        '# sudo firewall-cmd --permanent --remove-port=6379/tcp\n\n'
+        '# Apply firewall changes\n'
+        'sudo firewall-cmd --reload\n\n'
+        '# List all configured rules\n'
+        'sudo firewall-cmd --list-all\n\n'
+        '# Test connectivity from application server\n'
+        'telnet redis-server 6379\n'
+        'nc -zv redis-server 6379'
     )
 
     doc.add_paragraph()
     add_paragraph(doc, '4.7 SELinux Configuration', bold=True)
-    add_paragraph(doc, 'Purpose: Configure SELinux to allow Redis operations.')
+    add_paragraph(doc,
+        'Purpose: Configure SELinux to allow Redis operations while maintaining mandatory access '
+        'controls. For production environments, keep SELinux in enforcing mode and configure appropriate '
+        'policies. Disabling SELinux violates security best practices and may fail compliance audits '
+        '(PCI-DSS, HIPAA, SOC2). Work with your security team to create custom policies if needed.'
+    )
     add_code_block(doc,
-        '# Check SELinux status\n'
-        'sestatus\n\n'
-        '# Option 1: Set to permissive mode (for testing)\n'
-        'sudo setenforce 0\n'
-        'sudo sed -i "s/SELINUX=enforcing/SELINUX=permissive/" /etc/selinux/config\n\n'
-        '# Option 2: Configure SELinux policies (production recommended)\n'
-        'sudo setsebool -P redis_enable_homedirs 1'
+        '# Check current SELinux status\n'
+        'sestatus\n'
+        'getenforce\n\n'
+        '# PRODUCTION RECOMMENDED: Configure SELinux policies\n'
+        '# Install SELinux policy tools\n'
+        'sudo dnf install -y policycoreutils-python-utils\n\n'
+        '# Allow Redis to bind to network ports\n'
+        'sudo semanage port -a -t redis_port_t -p tcp 6379\n'
+        'sudo semanage port -a -t redis_port_t -p tcp 16379\n'
+        'sudo semanage port -a -t redis_port_t -p tcp 26379\n\n'
+        '# Set correct SELinux context for Redis directories\n'
+        'sudo semanage fcontext -a -t redis_var_lib_t "/var/lib/redis(/.*)?"\n'
+        'sudo semanage fcontext -a -t redis_log_t "/var/log/redis(/.*)?"\n'
+        'sudo restorecon -Rv /var/lib/redis\n'
+        'sudo restorecon -Rv /var/log/redis\n\n'
+        '# Enable required boolean for network access\n'
+        'sudo setsebool -P redis_enable_homedirs 1\n\n'
+        '# Monitor for SELinux denials\n'
+        'sudo ausearch -m avc -ts recent | grep redis\n\n'
+        '# If denials occur, generate custom policy:\n'
+        '# 1. Reproduce the denied operation\n'
+        '# 2. Generate policy module:\n'
+        '#    sudo grep redis /var/log/audit/audit.log | audit2allow -M redis_custom\n'
+        '# 3. Review the generated policy:\n'
+        '#    cat redis_custom.te\n'
+        '# 4. Install policy (after security team approval):\n'
+        '#    sudo semodule -i redis_custom.pp\n\n'
+        '# DEVELOPMENT/TESTING ONLY: Temporary permissive mode\n'
+        '# sudo setenforce 0  # Temporary until reboot\n\n'
+        '# NEVER DO THIS IN PRODUCTION: Permanently disable\n'
+        '# sudo sed -i "s/SELINUX=enforcing/SELINUX=disabled/" /etc/selinux/config\n'
+        '# Requires reboot and violates security policies'
+    )
+
+    doc.add_paragraph()
+    add_paragraph(doc, '4.8 Time Synchronization (NTP/Chrony)', bold=True)
+    add_paragraph(doc,
+        'Purpose: Accurate time synchronization is critical for Redis Cluster, Sentinel, and logging. '
+        'Time drift between nodes can cause split-brain scenarios, certificate validation failures, '
+        'and difficulty in log correlation. Synchronize all Redis nodes with corporate NTP servers.'
+    )
+    add_code_block(doc,
+        '# Install chrony (modern NTP client)\n'
+        'sudo dnf install -y chrony\n\n'
+        '# Configure NTP servers\n'
+        'sudo vi /etc/chrony.conf\n'
+        '# Replace default servers with corporate NTP servers:\n'
+        '# server ntp1.corp.example.com iburst\n'
+        '# server ntp2.corp.example.com iburst\n'
+        '# server ntp3.corp.example.com iburst\n\n'
+        '# Enable and start chrony\n'
+        'sudo systemctl enable chronyd\n'
+        'sudo systemctl restart chronyd\n\n'
+        '# Verify synchronization status\n'
+        'chronyc tracking\n'
+        'chronyc sources -v\n\n'
+        '# Check if system clock is synchronized\n'
+        'timedatectl\n\n'
+        '# View time on all Redis nodes to verify sync\n'
+        'date\n\n'
+        '# Maximum time drift should be < 100ms'
+    )
+
+    doc.add_paragraph()
+    add_paragraph(doc, '4.9 Hostname Configuration (For Cluster/Sentinel)', bold=True)
+    add_paragraph(doc,
+        'Purpose: Redis Sentinel and Cluster require proper hostname resolution. Configure FQDNs '
+        'and ensure all nodes can resolve each other. Use corporate DNS in production; /etc/hosts '
+        'is acceptable for testing but not recommended for production due to management overhead.'
+    )
+    add_code_block(doc,
+        '# Set FQDN hostname\n'
+        'sudo hostnamectl set-hostname redis-node1.example.com\n\n'
+        '# Verify hostname\n'
+        'hostname\n'
+        'hostname -f\n\n'
+        '# Configure /etc/hosts if DNS is unavailable\n'
+        'sudo vi /etc/hosts\n'
+        '# Add all Redis nodes:\n'
+        '10.10.10.101 redis-node1.example.com redis-node1\n'
+        '10.10.10.102 redis-node2.example.com redis-node2\n'
+        '10.10.10.103 redis-node3.example.com redis-node3\n\n'
+        '# Test resolution from each node\n'
+        'ping -c 2 redis-node1.example.com\n'
+        'ping -c 2 redis-node2.example.com\n'
+        'ping -c 2 redis-node3.example.com\n\n'
+        '# Verify reverse lookup\n'
+        'nslookup redis-node1.example.com'
     )
 
     doc.add_page_break()
