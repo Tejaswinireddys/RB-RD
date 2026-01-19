@@ -2,7 +2,7 @@
 
 ## Test Cases and Scenarios
 
-### Three-Node Cluster Configuration
+### Three-Node Cluster with Quorum Queues
 
 ---
 
@@ -10,35 +10,78 @@
 
 | Field | Value |
 |-------|-------|
-| Document Version | 1.0 |
+| Document Version | 2.0 |
 | Last Updated | January 2026 |
 | RabbitMQ Version | 4.1.x |
 | Erlang Version | 26.x |
 | Operating System | Red Hat Enterprise Linux 8.x |
+| Queue Type | Quorum Queues |
 
 ---
 
 ## Table of Contents
 
-1. [Test Environment Setup](#1-test-environment-setup)
-2. [Prerequisites and Initial Verification](#2-prerequisites-and-initial-verification)
-3. [Test Case 1: Master Node Failure](#3-test-case-1-master-node-failure)
-4. [Test Case 2: Replica Node Failure](#4-test-case-2-replica-node-failure)
-5. [Test Case 3: Network Partition](#5-test-case-3-network-partition)
-6. [Test Case 4: Graceful Node Shutdown](#6-test-case-4-graceful-node-shutdown)
-7. [Test Case 5: Multiple Node Failure](#7-test-case-5-multiple-node-failure)
-8. [Test Case 6: Disk Alarm](#8-test-case-6-disk-alarm)
-9. [Test Case 7: Memory Alarm](#9-test-case-7-memory-alarm)
-10. [Test Case 8: Rolling Restart](#10-test-case-8-rolling-restart)
-11. [Test Case 9: Queue Mirroring Validation](#11-test-case-9-queue-mirroring-validation)
-12. [Test Case 10: Client Connection Failover](#12-test-case-10-client-connection-failover)
-13. [Monitoring Commands Reference](#13-monitoring-commands-reference)
-14. [Recovery Procedures](#14-recovery-procedures)
-15. [Test Results Template](#15-test-results-template)
+1. [Quorum Queues Overview](#1-quorum-queues-overview)
+2. [Test Environment Setup](#2-test-environment-setup)
+3. [Prerequisites and Initial Verification](#3-prerequisites-and-initial-verification)
+4. [Test Case 1: Leader Node Failure](#4-test-case-1-leader-node-failure)
+5. [Test Case 2: Follower Node Failure](#5-test-case-2-follower-node-failure)
+6. [Test Case 3: Network Partition](#6-test-case-3-network-partition)
+7. [Test Case 4: Graceful Node Shutdown](#7-test-case-4-graceful-node-shutdown)
+8. [Test Case 5: Quorum Loss](#8-test-case-5-quorum-loss)
+9. [Test Case 6: Disk Alarm](#9-test-case-6-disk-alarm)
+10. [Test Case 7: Memory Alarm](#10-test-case-7-memory-alarm)
+11. [Test Case 8: Rolling Restart](#11-test-case-8-rolling-restart)
+12. [Test Case 9: Quorum Queue Replication Validation](#12-test-case-9-quorum-queue-replication-validation)
+13. [Test Case 10: Client Connection Failover](#13-test-case-10-client-connection-failover)
+14. [Monitoring Commands Reference](#14-monitoring-commands-reference)
+15. [Recovery Procedures](#15-recovery-procedures)
+16. [Test Results Template](#16-test-results-template)
 
 ---
 
-## 1. Test Environment Setup
+## 1. Quorum Queues Overview
+
+### What are Quorum Queues?
+
+Quorum queues are the recommended queue type for high availability in RabbitMQ 4.x. They replace classic mirrored queues and HA policies.
+
+| Feature | Quorum Queues | Classic Mirrored (Deprecated) |
+|---------|---------------|-------------------------------|
+| Replication | Raft consensus protocol | Async mirroring with policies |
+| Data Safety | Strong consistency | Eventually consistent |
+| Configuration | Queue argument at declaration | HA policies |
+| Failover | Automatic leader election | Mirror promotion |
+| Performance | Optimized for safety | Higher throughput, less safe |
+
+### Key Concepts
+
+| Term | Description |
+|------|-------------|
+| **Leader** | Node that handles all reads and writes for the queue |
+| **Follower** | Nodes that replicate data from leader |
+| **Quorum** | Majority of nodes required for operations (2 of 3) |
+| **Raft** | Consensus algorithm used for replication |
+| **Replication Factor** | Number of nodes queue is replicated to (default: cluster size) |
+
+### Quorum Queue Declaration
+
+```bash
+# Declare quorum queue using rabbitmqadmin
+rabbitmqadmin declare queue name=my-quorum-queue durable=true arguments='{"x-queue-type":"quorum"}'
+
+# Or via rabbitmqctl
+rabbitmqctl eval 'rabbit_amqqueue:declare(
+    rabbit_misc:r(<<"/">>, queue, <<"my-quorum-queue">>),
+    true, false,
+    [{<<"x-queue-type">>, longstr, <<"quorum">>}],
+    none, <<"guest">>
+).'
+```
+
+---
+
+## 2. Test Environment Setup
 
 ### Cluster Node Details
 
@@ -57,76 +100,92 @@
 | 25672 | Inter-node communication |
 | 4369 | EPMD (Erlang Port Mapper) |
 
+### Quorum Requirements
+
+| Cluster Size | Quorum | Tolerated Failures |
+|--------------|--------|-------------------|
+| 3 nodes | 2 | 1 node |
+| 5 nodes | 3 | 2 nodes |
+| 7 nodes | 4 | 3 nodes |
+
 ---
 
-## 2. Prerequisites and Initial Verification
+## 3. Prerequisites and Initial Verification
 
 ### Verify Cluster Status
 
 ```bash
-# Check cluster status on any node
+# Check cluster status
 sudo rabbitmqctl cluster_status
 
-# Expected output should show all 3 nodes:
-# Running Nodes: rabbit@rabbitmq-node1, rabbit@rabbitmq-node2, rabbit@rabbitmq-node3
+# Expected: All 3 nodes in running nodes list
 ```
 
 ### Verify Node Health
 
 ```bash
-# Check if RabbitMQ application is running
+# Check if RabbitMQ is running
 sudo rabbitmqctl status
 
-# Check node health
+# Run health checks
 sudo rabbitmq-diagnostics check_running
 sudo rabbitmq-diagnostics check_local_alarms
 sudo rabbitmq-diagnostics check_port_connectivity
 ```
 
-### Verify HA Policy
+### Create Test Quorum Queue
 
 ```bash
-# List all policies
-sudo rabbitmqctl list_policies
-
-# Expected: ha-all policy with pattern ".*" and ha-mode: all
-```
-
-### Create Test Queue
-
-```bash
-# Enable management plugin if not enabled
+# Enable management plugin
 sudo rabbitmq-plugins enable rabbitmq_management
 
-# Create test queue using rabbitmqadmin
-sudo rabbitmqadmin declare queue name=test-failover-queue durable=true
+# Create quorum queue
+sudo rabbitmqadmin declare queue name=test-quorum-queue durable=true \
+    arguments='{"x-queue-type":"quorum"}'
+```
 
-# Verify queue creation
-sudo rabbitmqctl list_queues name pid slave_pids synchronised_slave_pids
+### Verify Quorum Queue Created
+
+```bash
+# List queues with type
+sudo rabbitmqctl list_queues name type leader replicas
+
+# Expected output:
+# test-quorum-queue   quorum   rabbit@rabbitmq-node1   [rabbit@rabbitmq-node1, rabbit@rabbitmq-node2, rabbit@rabbitmq-node3]
+```
+
+### Verify Queue Members
+
+```bash
+# Get detailed quorum queue info
+sudo rabbitmqctl list_queues name type leader members online
+
+# Check quorum queue status
+sudo rabbitmq-diagnostics check_if_node_is_quorum_critical
 ```
 
 ---
 
-## 3. Test Case 1: Master Node Failure
+## 4. Test Case 1: Leader Node Failure
 
 ### Objective
-Simulate failure of the node hosting the queue master and verify automatic failover.
+Simulate failure of the quorum queue leader node and verify automatic leader election.
 
 | Attribute | Value |
 |-----------|-------|
 | Severity | HIGH |
 | Expected Recovery | < 30 seconds |
-| Expected Data Loss | Minimal (in-flight messages only) |
+| Expected Data Loss | None (committed messages) |
 
 ### Pre-Test Setup
 
 ```bash
-# Identify queue master node
-sudo rabbitmqctl list_queues name pid slave_pids
+# Identify queue leader
+sudo rabbitmqctl list_queues name type leader
 
 # Publish test messages
 for i in {1..1000}; do
-    sudo rabbitmqadmin publish exchange=amq.default routing_key=test-failover-queue payload="message-$i"
+    sudo rabbitmqadmin publish exchange=amq.default routing_key=test-quorum-queue payload="message-$i"
 done
 
 # Verify message count
@@ -138,60 +197,56 @@ sudo rabbitmqctl list_queues name messages
 #### Step 1: Record Initial State
 
 ```bash
-# On any node
+# Record cluster and queue state
 sudo rabbitmqctl cluster_status
-sudo rabbitmqctl list_queues name messages consumers state
+sudo rabbitmqctl list_queues name type leader members online messages
 ```
 
-#### Step 2: Identify Queue Master
+#### Step 2: Identify Queue Leader
 
 ```bash
-# Find which node hosts the queue master
-sudo rabbitmqctl list_queues name pid
+# Find leader node
+sudo rabbitmqctl list_queues name leader
 
-# The node name in PID indicates the master (e.g., <rabbit@rabbitmq-node1.xxx.x>)
+# Example output: test-quorum-queue    rabbit@rabbitmq-node1
 ```
 
-#### Step 3: Stop RabbitMQ Application on Master Node
+#### Step 3: Stop RabbitMQ on Leader Node
 
 ```bash
-# On the queue master node (e.g., rabbitmq-node1)
+# On the leader node (e.g., rabbitmq-node1)
 sudo rabbitmqctl stop_app
-
-# This stops the RabbitMQ application but keeps Erlang VM running
-# More realistic than systemctl for testing application-level failures
 ```
 
-#### Step 4: Monitor Failover
+#### Step 4: Monitor Leader Election
 
 ```bash
-# On another node, monitor cluster status
-watch -n 1 "sudo rabbitmqctl cluster_status"
+# On another node, watch for new leader
+watch -n 1 "sudo rabbitmqctl list_queues name leader online"
 
-# Check queue status - master should migrate
-sudo rabbitmqctl list_queues name pid slave_pids state
+# New leader should be elected from followers
 ```
 
 #### Step 5: Verify Queue Availability
 
 ```bash
-# Queue should be available on surviving nodes
-sudo rabbitmqctl list_queues name messages consumers state
+# Check queue is available with new leader
+sudo rabbitmqctl list_queues name type leader messages
 
-# Publish new message to verify writes work
-sudo rabbitmqadmin publish exchange=amq.default routing_key=test-failover-queue payload="after-failover"
+# Publish new message
+sudo rabbitmqadmin publish exchange=amq.default routing_key=test-quorum-queue payload="after-failover"
 
-# Verify message count increased
+# Verify message count
 sudo rabbitmqctl list_queues name messages
 ```
 
-#### Step 6: Verify Client Connectivity
+#### Step 6: Verify Quorum Maintained
 
 ```bash
-# Check active connections
-sudo rabbitmqctl list_connections name state peer_host
+# Check online members (should be 2)
+sudo rabbitmqctl list_queues name members online
 
-# Clients should reconnect to available nodes
+# Quorum (2 of 3) is maintained
 ```
 
 ### Post-Test Recovery
@@ -200,28 +255,28 @@ sudo rabbitmqctl list_connections name state peer_host
 # On the stopped node
 sudo rabbitmqctl start_app
 
-# Verify node rejoined cluster
+# Verify node rejoined
 sudo rabbitmqctl cluster_status
 
-# Verify queue synchronization
-sudo rabbitmqctl list_queues name synchronised_slave_pids
+# Verify queue has all members online
+sudo rabbitmqctl list_queues name members online
 ```
 
 ### Expected Results
 
-- [ ] Queue master migrates to a mirror node automatically
+- [ ] New leader elected automatically from followers
 - [ ] Queue remains available during failover
-- [ ] Messages are preserved (except in-flight)
-- [ ] Clients reconnect to available nodes
-- [ ] Stopped node rejoins cluster after start_app
-- [ ] Queue synchronizes with rejoined node
+- [ ] All committed messages preserved
+- [ ] New writes succeed on new leader
+- [ ] Stopped node rejoins as follower
+- [ ] All members back online after recovery
 
 ---
 
-## 4. Test Case 2: Replica Node Failure
+## 5. Test Case 2: Follower Node Failure
 
 ### Objective
-Verify that failure of a replica (mirror) node has minimal impact on operations.
+Verify that failure of a follower node has minimal impact on queue operations.
 
 | Attribute | Value |
 |-----------|-------|
@@ -231,90 +286,82 @@ Verify that failure of a replica (mirror) node has minimal impact on operations.
 
 ### Test Steps
 
-#### Step 1: Identify Replica Node
+#### Step 1: Identify Follower Node
 
 ```bash
-# List queue mirrors
-sudo rabbitmqctl list_queues name pid slave_pids
+# List queue members
+sudo rabbitmqctl list_queues name leader members
 
-# Choose a node from slave_pids (not the master)
+# Choose a node that is NOT the leader
 ```
 
-#### Step 2: Stop RabbitMQ Application on Replica
+#### Step 2: Stop RabbitMQ on Follower
 
 ```bash
-# On a replica node (e.g., rabbitmq-node2)
+# On a follower node (not the leader)
 sudo rabbitmqctl stop_app
 ```
 
-#### Step 3: Verify Cluster Status
+#### Step 3: Verify Queue Operations Continue
 
 ```bash
-# On master or remaining replica
-sudo rabbitmqctl cluster_status
-
-# Stopped node should appear in cluster but not in running nodes
-```
-
-#### Step 4: Verify Queue Operations Continue
-
-```bash
-# Queue should continue operating normally
-sudo rabbitmqctl list_queues name messages consumers state
+# Queue should continue with 2 members (quorum maintained)
+sudo rabbitmqctl list_queues name leader online messages
 
 # Publish messages
-sudo rabbitmqadmin publish exchange=amq.default routing_key=test-failover-queue payload="test-message"
+sudo rabbitmqadmin publish exchange=amq.default routing_key=test-quorum-queue payload="test-message"
 
 # Consume messages
-sudo rabbitmqadmin get queue=test-failover-queue ackmode=ack_requeue_false
+sudo rabbitmqadmin get queue=test-quorum-queue ackmode=ack_requeue_false
 ```
 
-#### Step 5: Restart Failed Node
+#### Step 4: Verify Quorum Status
 
 ```bash
-# On the stopped replica
+# Check online members
+sudo rabbitmqctl list_queues name members online
+
+# Should show 2 online members
+```
+
+#### Step 5: Restart Follower
+
+```bash
+# On the stopped follower
 sudo rabbitmqctl start_app
 
 # Verify node rejoined
-sudo rabbitmqctl cluster_status
-```
+sudo rabbitmqctl list_queues name members online
 
-#### Step 6: Verify Resynchronization
-
-```bash
-# Check queue synchronization status
-sudo rabbitmqctl list_queues name slave_pids synchronised_slave_pids
-
-# slave_pids and synchronised_slave_pids should match
+# All 3 members should be online
 ```
 
 ### Expected Results
 
-- [ ] No impact on queue master operations
-- [ ] Messages continue to be published and consumed
-- [ ] Replica rejoins cluster cleanly
-- [ ] Queue resynchronizes automatically
+- [ ] No impact on queue operations
+- [ ] Leader continues handling requests
+- [ ] Quorum maintained with 2 nodes
+- [ ] Follower rejoins and syncs automatically
+- [ ] All members online after recovery
 
 ---
 
-## 5. Test Case 3: Network Partition
+## 6. Test Case 3: Network Partition
 
 ### Objective
-Test cluster behavior during network partition and verify partition handling.
+Test cluster behavior during network partition with quorum queues.
 
 | Attribute | Value |
 |-----------|-------|
 | Severity | CRITICAL |
 | Expected Recovery | 1-2 minutes |
-| Partition Handling | autoheal (recommended) |
+| Partition Handling | Quorum-based |
 
 ### Prerequisites
 
 ```bash
-# Verify partition handling mode
+# Check partition handling
 sudo rabbitmqctl eval "application:get_env(rabbit, cluster_partition_handling)."
-
-# Should return: {ok,autoheal} or {ok,pause_minority}
 ```
 
 ### Test Steps
@@ -323,79 +370,82 @@ sudo rabbitmqctl eval "application:get_env(rabbit, cluster_partition_handling)."
 
 ```bash
 sudo rabbitmqctl cluster_status
-sudo rabbitmqctl list_queues name messages
+sudo rabbitmqctl list_queues name leader members online messages
 ```
 
 #### Step 2: Create Network Partition
 
 ```bash
-# On node1, block traffic from node2 and node3
+# On node1, isolate from node2 and node3
 sudo iptables -A INPUT -s 192.168.1.102 -j DROP
 sudo iptables -A INPUT -s 192.168.1.103 -j DROP
 sudo iptables -A OUTPUT -d 192.168.1.102 -j DROP
 sudo iptables -A OUTPUT -d 192.168.1.103 -j DROP
 
-# Creates partition: [node1] | [node2, node3]
+# Creates: [node1] | [node2, node3]
 ```
 
-#### Step 3: Detect Partition
+#### Step 3: Observe Quorum Behavior
 
 ```bash
-# On node1 (isolated)
-sudo rabbitmqctl cluster_status
-# Should show node2 and node3 as partitioned
+# On isolated node (node1)
+sudo rabbitmqctl list_queues name leader online
 
-# On node2 or node3
-sudo rabbitmqctl cluster_status
-# Should show node1 as partitioned
+# If node1 was leader:
+# - It loses quorum (only 1 of 3 nodes)
+# - Queue becomes unavailable on this node
+
+# On majority side (node2 or node3)
+sudo rabbitmqctl list_queues name leader online
+
+# - Quorum maintained (2 of 3 nodes)
+# - New leader elected if needed
+# - Queue remains available
 ```
 
-#### Step 4: Observe Partition Handling
+#### Step 4: Test Writes on Both Sides
 
 ```bash
-# Check for partition alarms
-sudo rabbitmqctl list_alarms
+# On isolated node (minority)
+sudo rabbitmqadmin publish exchange=amq.default routing_key=test-quorum-queue payload="minority-write"
+# Should FAIL - no quorum
 
-# With autoheal: cluster will automatically heal after network restored
-# With pause_minority: minority partition (node1) will pause
+# On majority side
+sudo rabbitmqadmin publish exchange=amq.default routing_key=test-quorum-queue payload="majority-write"
+# Should SUCCEED - quorum maintained
 ```
 
 #### Step 5: Restore Network
 
 ```bash
-# On node1, remove iptables rules
+# On node1
 sudo iptables -F
 ```
 
-#### Step 6: Verify Partition Healed
+#### Step 6: Verify Cluster Heals
 
 ```bash
-# Wait 30-60 seconds for autoheal
+# Wait for cluster to reform
+sleep 30
+
 sudo rabbitmqctl cluster_status
-
-# All nodes should be running
-```
-
-#### Step 7: Verify Queue Integrity
-
-```bash
-sudo rabbitmqctl list_queues name messages synchronised_slave_pids
+sudo rabbitmqctl list_queues name leader members online
 ```
 
 ### Expected Results
 
-- [ ] Partition detected by all nodes
-- [ ] Autoheal restarts affected nodes
-- [ ] Cluster reforms after network restored
-- [ ] No data corruption occurs
-- [ ] Alarms clear after healing
+- [ ] Minority side loses quorum and becomes unavailable
+- [ ] Majority side maintains quorum and availability
+- [ ] Writes only succeed on majority side
+- [ ] Cluster heals after network restored
+- [ ] No data corruption or loss
 
 ---
 
-## 6. Test Case 4: Graceful Node Shutdown
+## 7. Test Case 4: Graceful Node Shutdown
 
 ### Objective
-Verify proper queue migration during planned maintenance.
+Verify proper leader transfer during planned maintenance.
 
 | Attribute | Value |
 |-----------|-------|
@@ -405,81 +455,69 @@ Verify proper queue migration during planned maintenance.
 
 ### Test Steps
 
-#### Step 1: Prepare for Shutdown
+#### Step 1: Check Current Leader
 
 ```bash
-# Check cluster health
-sudo rabbitmqctl cluster_status
-sudo rabbitmqctl list_queues name messages
+sudo rabbitmqctl list_queues name leader
 ```
 
-#### Step 2: Suspend Listeners (Optional)
+#### Step 2: Transfer Leadership (If Shutting Down Leader)
 
 ```bash
-# Prevent new connections to the node being shut down
-sudo rabbitmqctl suspend_listeners
+# Transfer leadership before shutdown (optional but recommended)
+sudo rabbitmqctl eval 'rabbit_quorum_queue:transfer_leadership(<<"test-quorum-queue">>, <<"rabbit@rabbitmq-node2">>).'
 
-# Existing connections continue but no new ones accepted
+# Verify new leader
+sudo rabbitmqctl list_queues name leader
 ```
 
 #### Step 3: Stop RabbitMQ Application
 
 ```bash
-# Graceful stop
+# On the node being shut down
 sudo rabbitmqctl stop_app
-
-# Or full stop including Erlang VM
-sudo rabbitmqctl stop
 ```
 
-#### Step 4: Verify Cluster Adapts
+#### Step 4: Verify Queue Available
 
 ```bash
-# On remaining nodes
-sudo rabbitmqctl cluster_status
-sudo rabbitmqctl list_queues name messages consumers state
+# On other nodes
+sudo rabbitmqctl list_queues name leader online messages
 ```
 
 #### Step 5: Restart Node
 
 ```bash
-# Start RabbitMQ
 sudo rabbitmqctl start_app
 
-# Or if fully stopped
-# Start via system service, then verify:
-sudo rabbitmqctl cluster_status
-```
-
-#### Step 6: Resume Listeners
-
-```bash
-# If listeners were suspended
-sudo rabbitmqctl resume_listeners
+# Verify all members online
+sudo rabbitmqctl list_queues name members online
 ```
 
 ### Expected Results
 
-- [ ] No message loss during graceful shutdown
-- [ ] Connections drain or migrate gracefully
-- [ ] Queue masters migrate to other nodes
-- [ ] Node rejoins cluster cleanly
+- [ ] Leadership transferred smoothly (if specified)
+- [ ] No message loss
+- [ ] Queue remains available
+- [ ] Node rejoins as follower
 
 ---
 
-## 7. Test Case 5: Multiple Node Failure
+## 8. Test Case 5: Quorum Loss
 
 ### Objective
-Test cluster behavior when multiple nodes fail (quorum lost).
+Test behavior when quorum is lost (majority of nodes unavailable).
 
 | Attribute | Value |
 |-----------|-------|
 | Severity | CRITICAL |
-| Recovery | Manual intervention required |
+| Recovery | Manual intervention |
 
-> **Warning**: This test will make the cluster unavailable. Only perform in test environment.
+> **Warning**: This will make the queue unavailable. Test environment only.
 
-### Scenario A: Two Nodes Fail
+### Test Steps
+
+#### Step 1: Stop Two Nodes
 
 ```bash
 # Stop node2
@@ -487,50 +525,50 @@ sudo rabbitmqctl stop_app  # on rabbitmq-node2
 
 # Stop node3
 sudo rabbitmqctl stop_app  # on rabbitmq-node3
-
-# On node1 (remaining node)
-sudo rabbitmqctl cluster_status
-# Cluster loses quorum
 ```
 
-### Recovery Procedure
+#### Step 2: Observe Queue Unavailability
 
 ```bash
-# Start nodes in sequence
-# On node2
-sudo rabbitmqctl start_app
+# On remaining node (node1)
+sudo rabbitmqctl list_queues name leader online
 
-# On node3
-sudo rabbitmqctl start_app
-
-# Verify recovery
-sudo rabbitmqctl cluster_status
+# Queue should show only 1 online member
+# Operations will fail due to no quorum
 ```
 
-### Scenario B: All Nodes Down
+#### Step 3: Attempt Write (Should Fail)
 
 ```bash
-# If all nodes stopped, start the last node that was running first
+sudo rabbitmqadmin publish exchange=amq.default routing_key=test-quorum-queue payload="no-quorum-write"
+# Expected: Error - queue unavailable
+```
 
-# Use force_boot if needed
-sudo rabbitmqctl force_boot
-sudo rabbitmqctl start_app
+#### Step 4: Recovery
 
-# Then start other nodes
+```bash
+# Start nodes to restore quorum
+sudo rabbitmqctl start_app  # on node2
+sudo rabbitmqctl start_app  # on node3
+
+# Verify quorum restored
+sudo rabbitmqctl list_queues name members online
 ```
 
 ### Expected Results
 
-- [ ] Cluster becomes unavailable with quorum lost
-- [ ] Recovery requires manual node restart
-- [ ] Data preserved after recovery (if persistence enabled)
+- [ ] Queue unavailable without quorum
+- [ ] Writes fail cleanly with error
+- [ ] Reads may work for already-fetched messages
+- [ ] Full recovery after quorum restored
+- [ ] No data corruption
 
 ---
 
-## 8. Test Case 6: Disk Alarm
+## 9. Test Case 6: Disk Alarm
 
 ### Objective
-Verify RabbitMQ behavior when disk space is low.
+Verify behavior when disk space is low.
 
 | Attribute | Value |
 |-----------|-------|
@@ -539,74 +577,58 @@ Verify RabbitMQ behavior when disk space is low.
 
 ### Test Steps
 
-#### Step 1: Check Current Disk Limit
+#### Step 1: Check Disk Status
 
 ```bash
 sudo rabbitmqctl eval "rabbit_disk_monitor:get_disk_free_limit()."
 ```
 
-#### Step 2: Trigger Disk Alarm (Test Only)
+#### Step 2: Trigger Disk Alarm
 
 ```bash
-# Temporarily set high disk limit to trigger alarm
+# Set high threshold to trigger alarm
 sudo rabbitmqctl eval "rabbit_disk_monitor:set_disk_free_limit({mem_relative, 5.0})."
-
-# Or create large file to fill disk
-sudo fallocate -l 40G /var/lib/rabbitmq/large-file
 ```
 
-#### Step 3: Verify Alarm Triggered
+#### Step 3: Verify Alarm
 
 ```bash
 sudo rabbitmqctl list_alarms
-# Should show: {resource_limit,disk,rabbit@node}
+# Should show disk alarm
 
-# Check node status
 sudo rabbitmq-diagnostics check_local_alarms
 ```
 
-#### Step 4: Verify Publisher Blocking
+#### Step 4: Test Publisher Blocking
 
 ```bash
-# Try to publish - should be blocked
-sudo rabbitmqadmin publish exchange=amq.default routing_key=test-queue payload="test"
-# Will hang or return error
+# Publish attempt will be blocked
+sudo rabbitmqadmin publish exchange=amq.default routing_key=test-quorum-queue payload="blocked"
 ```
 
 #### Step 5: Clear Alarm
 
 ```bash
-# Remove test file
-sudo rm /var/lib/rabbitmq/large-file
-
-# Or restore normal disk limit
+# Restore normal threshold
 sudo rabbitmqctl eval "rabbit_disk_monitor:set_disk_free_limit({mem_relative, 1.0})."
-```
 
-#### Step 6: Verify Recovery
-
-```bash
+# Verify alarm cleared
 sudo rabbitmqctl list_alarms
-# Should be empty
-
-# Publishing should work again
-sudo rabbitmqadmin publish exchange=amq.default routing_key=test-queue payload="test"
 ```
 
 ### Expected Results
 
-- [ ] Disk alarm triggers when limit reached
-- [ ] Publishers are blocked
-- [ ] Consumers continue to work
-- [ ] Alarm clears when disk freed
-- [ ] Publishers resume automatically
+- [ ] Disk alarm triggers
+- [ ] Publishers blocked
+- [ ] Consumers continue working
+- [ ] Alarm clears when resolved
 
 ---
 
-## 9. Test Case 7: Memory Alarm
+## 10. Test Case 7: Memory Alarm
 
 ### Objective
-Test RabbitMQ behavior under memory pressure.
+Test behavior under memory pressure.
 
 | Attribute | Value |
 |-----------|-------|
@@ -619,58 +641,41 @@ Test RabbitMQ behavior under memory pressure.
 
 ```bash
 sudo rabbitmqctl eval "vm_memory_monitor:get_memory_limit()."
-sudo rabbitmqctl eval "vm_memory_monitor:get_vm_memory_high_watermark()."
 ```
 
-#### Step 2: Trigger Memory Alarm (Test Only)
+#### Step 2: Trigger Memory Alarm
 
 ```bash
-# Temporarily lower memory threshold
+# Lower threshold to trigger alarm
 sudo rabbitmqctl eval "vm_memory_monitor:set_vm_memory_high_watermark(0.1)."
-
-# Or publish many large messages
-for i in {1..100000}; do
-    sudo rabbitmqadmin publish exchange=amq.default routing_key=test-queue payload="$(head -c 10000 /dev/urandom | base64)"
-done
 ```
 
 #### Step 3: Verify Alarm
 
 ```bash
 sudo rabbitmqctl list_alarms
-# Should show: {resource_limit,memory,rabbit@node}
-
-sudo rabbitmqctl status | grep -A 10 memory
+sudo rabbitmq-diagnostics check_local_alarms
 ```
 
 #### Step 4: Clear Alarm
 
 ```bash
-# Consume messages to reduce memory
-sudo rabbitmqadmin get queue=test-queue count=10000 ackmode=ack_requeue_false
-
-# Or restore normal threshold
+# Restore normal threshold
 sudo rabbitmqctl eval "vm_memory_monitor:set_vm_memory_high_watermark(0.4)."
-```
 
-#### Step 5: Verify Recovery
-
-```bash
 sudo rabbitmqctl list_alarms
-# Should be empty
 ```
 
 ### Expected Results
 
-- [ ] Memory alarm triggers at watermark
-- [ ] Publishers are blocked/throttled
-- [ ] Consumers continue processing
-- [ ] Alarm clears when memory freed
-- [ ] Publishers resume automatically
+- [ ] Memory alarm triggers
+- [ ] Publishers blocked/throttled
+- [ ] Consumers continue
+- [ ] Alarm clears when resolved
 
 ---
 
-## 10. Test Case 8: Rolling Restart
+## 11. Test Case 8: Rolling Restart
 
 ### Objective
 Perform rolling restart with zero downtime.
@@ -686,66 +691,61 @@ Perform rolling restart with zero downtime.
 
 ```bash
 sudo rabbitmqctl cluster_status
-sudo rabbitmqctl list_queues name messages
+sudo rabbitmqctl list_queues name leader members online
 ```
 
-#### Step 2: Start Continuous Message Flow
+#### Step 2: Restart Followers First
 
 ```bash
-# Keep producer and consumer running throughout test
-# Monitor for any interruptions
-```
+# Identify followers (not leader)
+sudo rabbitmqctl list_queues name leader
 
-#### Step 3: Restart Replica 1 (node3)
-
-```bash
-# On rabbitmq-node3
-sudo rabbitmqctl stop_app
+# Restart follower 1
+sudo rabbitmqctl stop_app  # on follower node
 sudo rabbitmqctl start_app
 
 # Wait for sync
-sudo rabbitmqctl list_queues name synchronised_slave_pids
-```
+sudo rabbitmqctl list_queues name members online
 
-#### Step 4: Restart Replica 2 (node2)
-
-```bash
-# On rabbitmq-node2
-sudo rabbitmqctl stop_app
-sudo rabbitmqctl start_app
-
-# Wait for sync
-sudo rabbitmqctl list_queues name synchronised_slave_pids
-```
-
-#### Step 5: Restart Primary (node1)
-
-```bash
-# On rabbitmq-node1 (if it's queue master, queue will migrate)
-sudo rabbitmqctl stop_app
+# Restart follower 2
+sudo rabbitmqctl stop_app  # on other follower
 sudo rabbitmqctl start_app
 ```
 
-#### Step 6: Verify Complete Cluster
+#### Step 3: Transfer Leadership Then Restart Leader
+
+```bash
+# Transfer leadership away from node being restarted
+sudo rabbitmqctl eval 'rabbit_quorum_queue:transfer_leadership(<<"test-quorum-queue">>, <<"rabbit@rabbitmq-node2">>).'
+
+# Verify transfer
+sudo rabbitmqctl list_queues name leader
+
+# Restart old leader
+sudo rabbitmqctl stop_app
+sudo rabbitmqctl start_app
+```
+
+#### Step 4: Verify Complete Cluster
 
 ```bash
 sudo rabbitmqctl cluster_status
-sudo rabbitmqctl list_queues name synchronised_slave_pids
+sudo rabbitmqctl list_queues name leader members online
 ```
 
 ### Expected Results
 
-- [ ] Zero message loss
-- [ ] Continuous availability
-- [ ] All nodes synchronized after restart
-- [ ] No client disconnections (with proper reconnect logic)
+- [ ] Zero downtime maintained
+- [ ] Quorum always preserved
+- [ ] No message loss
+- [ ] All members online after restart
 
 ---
 
-## 11. Test Case 9: Queue Mirroring Validation
+## 12. Test Case 9: Quorum Queue Replication Validation
 
 ### Objective
-Verify queue mirroring is working correctly.
+Verify data is correctly replicated across all queue members.
 
 | Attribute | Value |
 |-----------|-------|
@@ -754,136 +754,124 @@ Verify queue mirroring is working correctly.
 
 ### Test Steps
 
-#### Step 1: Check HA Policy
+#### Step 1: Create Test Queue
 
 ```bash
-sudo rabbitmqctl list_policies
-
-# Verify ha-all policy exists with:
-# Pattern: .*
-# Definition: {"ha-mode":"all","ha-sync-mode":"automatic"}
+sudo rabbitmqadmin declare queue name=replication-test durable=true \
+    arguments='{"x-queue-type":"quorum"}'
 ```
 
-#### Step 2: Create Test Queue
+#### Step 2: Verify Members
 
 ```bash
-sudo rabbitmqadmin declare queue name=mirror-test durable=true
+sudo rabbitmqctl list_queues name type members online
+
+# Should show all 3 nodes as members
 ```
 
-#### Step 3: Verify Mirroring
-
-```bash
-sudo rabbitmqctl list_queues name pid slave_pids
-
-# Queue should have 2 slave_pids (mirrors on other nodes)
-```
-
-#### Step 4: Publish Messages
+#### Step 3: Publish Messages
 
 ```bash
 for i in {1..1000}; do
-    sudo rabbitmqadmin publish exchange=amq.default routing_key=mirror-test payload="message-$i"
+    sudo rabbitmqadmin publish exchange=amq.default routing_key=replication-test payload="message-$i"
 done
 ```
 
-#### Step 5: Verify Synchronization
+#### Step 4: Verify Replication
 
 ```bash
-sudo rabbitmqctl list_queues name messages slave_pids synchronised_slave_pids
+# Check message count
+sudo rabbitmqctl list_queues name messages
 
-# synchronised_slave_pids should match slave_pids
-```
-
-#### Step 6: Test Failover
-
-```bash
-# Identify and stop master node for the queue
-# Verify messages preserved on mirrors
-
-sudo rabbitmqctl stop_app  # on master
+# Stop leader and verify messages on new leader
+sudo rabbitmqctl list_queues name leader
+sudo rabbitmqctl stop_app  # on leader
 
 # On another node
 sudo rabbitmqctl list_queues name messages
-# Message count should be preserved
+# Count should match
+```
+
+#### Step 5: Consume and Verify
+
+```bash
+# Consume all messages
+for i in {1..1000}; do
+    sudo rabbitmqadmin get queue=replication-test ackmode=ack_requeue_false
+done
+
+# Verify queue empty
+sudo rabbitmqctl list_queues name messages
 ```
 
 ### Expected Results
 
-- [ ] Queue has mirrors on all nodes
-- [ ] Messages replicated to all mirrors
-- [ ] Synchronization maintained
-- [ ] Messages preserved during failover
+- [ ] Queue replicated to all members
+- [ ] Messages preserved after leader failure
+- [ ] No duplicate or lost messages
 
 ---
 
-## 12. Test Case 10: Client Connection Failover
+## 13. Test Case 10: Client Connection Failover
 
 ### Objective
-Verify clients reconnect automatically during node failures.
+Verify clients reconnect during node failures.
 
 | Attribute | Value |
 |-----------|-------|
 | Severity | MEDIUM |
 | Expected Reconnect | < 10 seconds |
 
-### Prerequisites
-
-Client must be configured with multiple node addresses.
-
 ### Test Steps
 
-#### Step 1: Check Current Connections
+#### Step 1: Check Connections
 
 ```bash
-sudo rabbitmqctl list_connections name peer_host peer_port state
-```
-
-#### Step 2: Identify Client's Node
-
-```bash
-# Note which node the client is connected to
 sudo rabbitmqctl list_connections name peer_host node
 ```
 
-#### Step 3: Stop Connected Node
+#### Step 2: Stop Connected Node
 
 ```bash
-# On the node client is connected to
-sudo rabbitmqctl stop_app
+# Identify and stop node with client connection
+sudo rabbitmqctl stop_app  # on connected node
 ```
 
-#### Step 4: Monitor Reconnection
+#### Step 3: Monitor Reconnection
 
 ```bash
-# On remaining nodes
+# On other nodes
 watch -n 1 "sudo rabbitmqctl list_connections name peer_host state"
-
-# Client should appear on a different node
 ```
 
-#### Step 5: Verify Operations Continue
+#### Step 4: Verify Operations Continue
 
 ```bash
-# Check if messages are flowing
 sudo rabbitmqctl list_queues name messages consumers
-```
-
-#### Step 6: Restart Node
-
-```bash
-sudo rabbitmqctl start_app
 ```
 
 ### Expected Results
 
-- [ ] Client detects connection loss
-- [ ] Client reconnects to available node
-- [ ] Message flow continues
+- [ ] Client reconnects automatically
+- [ ] Operations continue on new node
 - [ ] No manual intervention required
 
 ---
 
-## 13. Monitoring Commands Reference
+## 14. Monitoring Commands Reference
+
+### Quorum Queue Commands
+
+```bash
+# List quorum queues with details
+sudo rabbitmqctl list_queues name type leader members online messages
+
+# Check if node is quorum critical
+sudo rabbitmq-diagnostics check_if_node_is_quorum_critical
+
+# Get quorum queue info
+sudo rabbitmqctl list_queues name type arguments
+```
 
 ### Cluster Health
 
@@ -891,65 +879,39 @@ sudo rabbitmqctl start_app
 # Cluster status
 sudo rabbitmqctl cluster_status
 
-# Node health checks
+# Node health
 sudo rabbitmq-diagnostics check_running
 sudo rabbitmq-diagnostics check_local_alarms
-sudo rabbitmq-diagnostics check_port_connectivity
-sudo rabbitmq-diagnostics check_virtual_hosts
-
-# Comprehensive health check
 sudo rabbitmq-diagnostics status
 ```
 
 ### Queue Information
 
 ```bash
-# List all queues with details
-sudo rabbitmqctl list_queues name messages consumers memory state pid slave_pids synchronised_slave_pids
+# List all queues
+sudo rabbitmqctl list_queues name type messages consumers memory
 
-# Queue details for specific queue
-sudo rabbitmqctl list_queues name messages | grep test-queue
+# Quorum queue specific
+sudo rabbitmqctl list_queues name leader members online
 ```
 
 ### Connection Information
 
 ```bash
-# List connections
-sudo rabbitmqctl list_connections name state user peer_host peer_port
-
-# List channels
-sudo rabbitmqctl list_channels connection number consumer_count messages_unacknowledged
+sudo rabbitmqctl list_connections name state user peer_host node
+sudo rabbitmqctl list_channels connection consumer_count
 ```
 
 ### Resource Monitoring
 
 ```bash
-# Memory usage
-sudo rabbitmqctl status | grep -A 20 memory
-
-# Disk usage
-sudo rabbitmq-diagnostics check_alarms
-
-# Active alarms
 sudo rabbitmqctl list_alarms
-```
-
-### Replication Status
-
-```bash
-# Queue mirroring status
-sudo rabbitmqctl list_queues name slave_pids synchronised_slave_pids
-
-# Sync specific queue manually
-sudo rabbitmqctl sync_queue <queue_name>
-
-# Cancel sync
-sudo rabbitmqctl cancel_sync_queue <queue_name>
+sudo rabbitmqctl status | grep -A 20 memory
 ```
 
 ---
 
-## 14. Recovery Procedures
+## 15. Recovery Procedures
 
 ### Node Won't Start
 
@@ -957,64 +919,47 @@ sudo rabbitmqctl cancel_sync_queue <queue_name>
 # Check status
 sudo rabbitmqctl status
 
-# If cluster issue, try force boot
+# Force boot if cluster issue
 sudo rabbitmqctl force_boot
 sudo rabbitmqctl start_app
 
-# If still fails, reset and rejoin
+# Reset and rejoin if needed
 sudo rabbitmqctl stop_app
 sudo rabbitmqctl reset
 sudo rabbitmqctl join_cluster rabbit@rabbitmq-node1
 sudo rabbitmqctl start_app
 ```
 
-### Remove Failed Node from Cluster
+### Remove Failed Node
 
 ```bash
-# On a running node, remove the failed node
 sudo rabbitmqctl forget_cluster_node rabbit@failed-node
 ```
 
-### Reset Node Completely
+### Quorum Queue Recovery
 
 ```bash
-sudo rabbitmqctl stop_app
-sudo rabbitmqctl reset
-sudo rabbitmqctl start_app
+# Delete member from quorum queue (if node permanently gone)
+sudo rabbitmqctl delete_member <queue_name> <node_name>
+
+# Add member to quorum queue
+sudo rabbitmqctl add_member <queue_name> <node_name>
+
+# Example:
+sudo rabbitmqctl delete_member test-quorum-queue rabbit@failed-node
+sudo rabbitmqctl add_member test-quorum-queue rabbit@new-node
 ```
 
-### Force Sync Queues
+### Force Leader Election
 
 ```bash
-# List unsynchronized queues
-sudo rabbitmqctl list_queues name slave_pids synchronised_slave_pids | grep -v "^\s*$"
-
-# Sync specific queue
-sudo rabbitmqctl sync_queue queue_name
-
-# Sync all queues
-for queue in $(sudo rabbitmqctl list_queues -q name); do
-    sudo rabbitmqctl sync_queue "$queue"
-done
-```
-
-### Clear Alarms
-
-```bash
-# Check current alarms
-sudo rabbitmqctl list_alarms
-
-# Clear file descriptor alarm (increase limits)
-# Clear disk alarm (free disk space)
-# Clear memory alarm (increase memory or consume messages)
-
-# Verify alarms cleared
-sudo rabbitmq-diagnostics check_local_alarms
+# Transfer leadership to specific node
+sudo rabbitmqctl eval 'rabbit_quorum_queue:transfer_leadership(<<"queue-name">>, <<"rabbit@target-node">>).'
 ```
 
 ---
 
-## 15. Test Results Template
+## 16. Test Results Template
 
 ### Test Execution Record
 
@@ -1024,42 +969,31 @@ sudo rabbitmq-diagnostics check_local_alarms
 | Tester Name | |
 | Environment | |
 | RabbitMQ Version | |
-| Erlang Version | |
-| HA Policy | ha-all / ha-exactly:2 |
+| Queue Type | Quorum |
+| Cluster Size | 3 nodes |
 
 ### Test Results
 
-| Test Case | Status | Failover Time | Message Loss | Notes |
-|-----------|--------|---------------|--------------|-------|
-| TC1: Master Node Failure | | | | |
-| TC2: Replica Node Failure | | | | |
+| Test Case | Status | Failover Time | Data Loss | Notes |
+|-----------|--------|---------------|-----------|-------|
+| TC1: Leader Node Failure | | | | |
+| TC2: Follower Node Failure | | | | |
 | TC3: Network Partition | | | | |
 | TC4: Graceful Shutdown | | | | |
-| TC5: Multiple Node Failure | | | | |
+| TC5: Quorum Loss | | | | |
 | TC6: Disk Alarm | | | | |
 | TC7: Memory Alarm | | | | |
 | TC8: Rolling Restart | | | | |
-| TC9: Queue Mirroring | | | | |
+| TC9: Replication Validation | | | | |
 | TC10: Client Failover | | | | |
 
 ### Success Criteria
 
-- [ ] All failovers complete within 30 seconds
-- [ ] Message loss < 0.1% (in-flight only)
-- [ ] Cluster recovers to full health
-- [ ] No manual intervention for automatic scenarios
+- [ ] Leader election completes within 30 seconds
+- [ ] No data loss for committed messages
+- [ ] Cluster recovers automatically
+- [ ] Quorum maintained with 1 node failure
 - [ ] Clients reconnect within 10 seconds
-
-### Issues Found
-
-| # | Description | Severity | Resolution |
-|---|-------------|----------|------------|
-| 1 | | | |
-| 2 | | | |
-
-### Overall Result
-
-**[ ] PASS  [ ] FAIL  [ ] PASS WITH CONDITIONS**
 
 ---
 
@@ -1070,17 +1004,16 @@ sudo rabbitmq-diagnostics check_local_alarms
 | Cluster status | `sudo rabbitmqctl cluster_status` |
 | Stop app | `sudo rabbitmqctl stop_app` |
 | Start app | `sudo rabbitmqctl start_app` |
-| List queues | `sudo rabbitmqctl list_queues name messages` |
-| List connections | `sudo rabbitmqctl list_connections` |
+| List queues (quorum) | `sudo rabbitmqctl list_queues name type leader members online` |
 | List alarms | `sudo rabbitmqctl list_alarms` |
 | Health check | `sudo rabbitmq-diagnostics check_running` |
+| Quorum critical check | `sudo rabbitmq-diagnostics check_if_node_is_quorum_critical` |
+| Transfer leadership | `sudo rabbitmqctl eval 'rabbit_quorum_queue:transfer_leadership(...).'` |
+| Add member | `sudo rabbitmqctl add_member <queue> <node>` |
+| Delete member | `sudo rabbitmqctl delete_member <queue> <node>` |
 | Force boot | `sudo rabbitmqctl force_boot` |
-| Reset node | `sudo rabbitmqctl reset` |
-| Join cluster | `sudo rabbitmqctl join_cluster rabbit@node` |
 | Forget node | `sudo rabbitmqctl forget_cluster_node rabbit@node` |
-| Sync queue | `sudo rabbitmqctl sync_queue <name>` |
-| List policies | `sudo rabbitmqctl list_policies` |
 
 ---
 
-*Document Version: 1.0 | Last Updated: January 2026*
+*Document Version: 2.0 | Last Updated: January 2026*
