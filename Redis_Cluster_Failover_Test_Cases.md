@@ -1,8 +1,8 @@
 # Redis Cluster Failover
 
-## Scenarios, Test Cases, and Procedures
+## Test Cases and Scenarios
 
-### Three-Node Cluster Configuration with Redis Sentinel
+### Three-Node Cluster with Redis Sentinel
 
 ---
 
@@ -10,243 +10,173 @@
 
 | Field | Value |
 |-------|-------|
-| Document Version | 1.0 |
+| Document Version | 2.0 |
 | Last Updated | January 2026 |
 | Redis Version | 8.x |
 | Operating System | Red Hat Enterprise Linux 8.x |
-| Document Type | Test Procedures and Scenarios |
-| Target Audience | DevOps Engineers, SREs, System Administrators |
+| HA Method | Redis Sentinel |
 
 ---
 
 ## Table of Contents
 
-1. [Introduction](#1-introduction)
+1. [Redis Sentinel Overview](#1-redis-sentinel-overview)
 2. [Test Environment Setup](#2-test-environment-setup)
-3. [Prerequisites and Assumptions](#3-prerequisites-and-assumptions)
-4. [Redis Architecture Overview](#4-redis-architecture-overview)
-5. [Failover Scenarios Overview](#5-failover-scenarios-overview)
-6. [Test Case 1: Master Node Failure](#6-test-case-1-master-node-failure)
-7. [Test Case 2: Replica Node Failure](#7-test-case-2-replica-node-failure)
-8. [Test Case 3: Sentinel Node Failure](#8-test-case-3-sentinel-node-failure)
-9. [Test Case 4: Network Partition (Split-Brain)](#9-test-case-4-network-partition-split-brain)
-10. [Test Case 5: Graceful Node Shutdown](#10-test-case-5-graceful-node-shutdown)
-11. [Test Case 6: Multiple Node Failure](#11-test-case-6-multiple-node-failure)
-12. [Test Case 7: Disk Space Exhaustion](#12-test-case-7-disk-space-exhaustion)
-13. [Test Case 8: Memory Exhaustion](#13-test-case-8-memory-exhaustion)
-14. [Test Case 9: Rolling Restart](#14-test-case-9-rolling-restart)
-15. [Test Case 10: Data Replication Validation](#15-test-case-10-data-replication-validation)
-16. [Test Case 11: Client Connection Failover](#16-test-case-11-client-connection-failover)
-17. [Test Case 12: Persistence and Recovery](#17-test-case-12-persistence-and-recovery)
-18. [Monitoring and Validation Commands](#18-monitoring-and-validation-commands)
-19. [Common Issues and Troubleshooting](#19-common-issues-and-troubleshooting)
-20. [Recovery Procedures](#20-recovery-procedures)
-21. [Best Practices for Production](#21-best-practices-for-production)
-22. [Test Results Template](#22-test-results-template)
+3. [Prerequisites and Initial Verification](#3-prerequisites-and-initial-verification)
+4. [Test Case 1: Master Node Failure](#4-test-case-1-master-node-failure)
+5. [Test Case 2: Replica Node Failure](#5-test-case-2-replica-node-failure)
+6. [Test Case 3: Sentinel Node Failure](#6-test-case-3-sentinel-node-failure)
+7. [Test Case 4: Network Partition](#7-test-case-4-network-partition)
+8. [Test Case 5: Graceful Node Shutdown](#8-test-case-5-graceful-node-shutdown)
+9. [Test Case 6: Quorum Loss](#9-test-case-6-quorum-loss)
+10. [Test Case 7: Disk Alarm](#10-test-case-7-disk-alarm)
+11. [Test Case 8: Memory Exhaustion](#11-test-case-8-memory-exhaustion)
+12. [Test Case 9: Rolling Restart](#12-test-case-9-rolling-restart)
+13. [Test Case 10: Data Replication Validation](#13-test-case-10-data-replication-validation)
+14. [Test Case 11: Client Connection Failover](#14-test-case-11-client-connection-failover)
+15. [Test Case 12: Persistence and Recovery](#15-test-case-12-persistence-and-recovery)
+16. [Monitoring Commands Reference](#16-monitoring-commands-reference)
+17. [Recovery Procedures](#17-recovery-procedures)
+18. [Test Results Template](#18-test-results-template)
 
 ---
 
-## 1. Introduction
+## 1. Redis Sentinel Overview
 
-This document provides comprehensive failover scenarios and test cases for a three-node Redis deployment with Redis Sentinel for high availability. It includes detailed step-by-step procedures to validate automatic failover, data replication, persistence, and disaster recovery capabilities.
+### What is Redis Sentinel?
 
-### Purpose of Failover Testing
+Redis Sentinel provides high availability for Redis through automatic failover, monitoring, and configuration provider services.
 
-- Validate automatic failover mechanisms work as expected
-- Ensure zero or minimal data loss during node failures
-- Test cluster behavior under various failure conditions
-- Verify client reconnection and data continuity
-- Identify potential weaknesses in the HA configuration
-- Document recovery procedures for production incidents
-- Build confidence in the high availability setup
-- Validate Sentinel quorum and leader election
+| Feature | Description |
+|---------|-------------|
+| Monitoring | Sentinel checks if master and replica instances are working |
+| Notification | Sentinel can notify on failures via API |
+| Automatic Failover | Promotes replica to master when master fails |
+| Configuration Provider | Clients connect to Sentinel to get current master address |
+
+### Key Concepts
+
+| Term | Description |
+|------|-------------|
+| **Master** | Node that handles all writes and replicates to replicas |
+| **Replica** | Nodes that maintain copies of master data |
+| **Sentinel** | Monitoring process that handles automatic failover |
+| **Quorum** | Minimum Sentinels required to agree on failover (majority) |
+| **SDOWN** | Subjectively Down - single Sentinel thinks node is down |
+| **ODOWN** | Objectively Down - quorum of Sentinels agree node is down |
+
+### Quorum Requirements
+
+| Cluster Size | Quorum | Tolerated Failures |
+|--------------|--------|-------------------|
+| 3 Sentinels | 2 | 1 Sentinel |
+| 5 Sentinels | 3 | 2 Sentinels |
 
 ---
 
 ## 2. Test Environment Setup
 
-### Required Infrastructure
-
-| Component | Specification | Purpose |
-|-----------|---------------|---------|
-| 3 RHEL 8 Servers | 4 CPU, 8GB RAM each | Redis nodes (1 Master, 2 Replicas) |
-| 3 Sentinel Processes | Co-located or separate | Monitoring and failover orchestration |
-| Test Client Machine | 2 CPU, 4GB RAM | Application testing |
-| Network Access | All nodes can communicate | Replication and Sentinel communication |
-| Monitoring Tools | Redis CLI, redis-stat | Cluster status monitoring |
-
 ### Cluster Node Details
 
 | Hostname | IP Address | Redis Role | Sentinel |
 |----------|------------|------------|----------|
-| redis-node1 | 192.168.1.101 | Master | Yes (Sentinel 1) |
-| redis-node2 | 192.168.1.102 | Replica | Yes (Sentinel 2) |
-| redis-node3 | 192.168.1.103 | Replica | Yes (Sentinel 3) |
+| redis-node1 | 192.168.1.101 | Master | Sentinel 1 |
+| redis-node2 | 192.168.1.102 | Replica | Sentinel 2 |
+| redis-node3 | 192.168.1.103 | Replica | Sentinel 3 |
 
 ### Port Configuration
 
-| Port | Service | Purpose |
-|------|---------|---------|
-| 6379 | Redis | Client connections and replication |
-| 26379 | Sentinel | Sentinel communication and client discovery |
-
-### Software Versions
-
-```
-Redis Version: 8.x
-Operating System: RHEL 8.x
-```
+| Port | Purpose |
+|------|---------|
+| 6379 | Redis client connections |
+| 26379 | Sentinel communication |
 
 ---
 
-## 3. Prerequisites and Assumptions
+## 3. Prerequisites and Initial Verification
 
-### Prerequisites
-
-- Redis is installed and running on all 3 nodes
-- Redis Sentinel is configured and running on all nodes
-- Master-Replica replication is established and synchronized
-- Sentinel quorum is configured (minimum 2 out of 3)
-- Administrative access to all cluster nodes
-- Monitoring tools are configured and accessible
-- Test data is loaded for validation
-- Test client applications are ready
-
-### Initial Cluster Verification
+### Verify Redis Status
 
 ```bash
-# Check Redis server status on all nodes
-redis-cli -h 192.168.1.101 -p 6379 ping
-redis-cli -h 192.168.1.102 -p 6379 ping
-redis-cli -h 192.168.1.103 -p 6379 ping
+# Check Redis is running on all nodes
+redis-cli -h 192.168.1.101 -p 6379 PING
+redis-cli -h 192.168.1.102 -p 6379 PING
+redis-cli -h 192.168.1.103 -p 6379 PING
+```
 
-# Check replication status on master
-redis-cli -h 192.168.1.101 -p 6379 info replication
+### Verify Replication Status
+
+```bash
+# Check replication on master
+redis-cli -h 192.168.1.101 -p 6379 INFO replication
 
 # Expected output:
 # role:master
 # connected_slaves:2
 # slave0:ip=192.168.1.102,port=6379,state=online,offset=xxx,lag=0
 # slave1:ip=192.168.1.103,port=6379,state=online,offset=xxx,lag=0
-
-# Check Sentinel status
-redis-cli -h 192.168.1.101 -p 26379 sentinel masters
-
-# Check Sentinel's view of replicas
-redis-cli -h 192.168.1.101 -p 26379 sentinel replicas mymaster
 ```
 
----
-
-## 4. Redis Architecture Overview
-
-### Master-Replica with Sentinel Configuration
-
-In a Redis high availability setup with Sentinel:
-- **One Master**: Handles all write operations
-- **Two Replicas**: Maintain synchronized copies of data, handle read operations
-- **Three Sentinels**: Monitor nodes, perform automatic failover, provide service discovery
-
-### Key Concepts
-
-| Concept | Description |
-|---------|-------------|
-| **Master** | Primary node that accepts writes and replicates to replicas |
-| **Replica** | Secondary nodes that maintain copies of master data |
-| **Sentinel** | Monitoring process that handles automatic failover |
-| **Quorum** | Minimum Sentinels required to agree on failover (typically majority) |
-| **Failover** | Automatic promotion of a replica to master when master fails |
-| **SDOWN** | Subjectively Down - single Sentinel thinks node is down |
-| **ODOWN** | Objectively Down - quorum of Sentinels agree node is down |
-
-### Sentinel Configuration
+### Verify Sentinel Status
 
 ```bash
-# View current Sentinel configuration
-redis-cli -h 192.168.1.101 -p 26379 sentinel master mymaster
+# Check Sentinel is running
+redis-cli -h 192.168.1.101 -p 26379 PING
 
-# Key configuration parameters:
-# sentinel monitor mymaster 192.168.1.101 6379 2
-# sentinel down-after-milliseconds mymaster 5000
-# sentinel failover-timeout mymaster 60000
-# sentinel parallel-syncs mymaster 1
+# Get master information from Sentinel
+redis-cli -h 192.168.1.101 -p 26379 SENTINEL master mymaster
+
+# Get current master address
+redis-cli -h 192.168.1.101 -p 26379 SENTINEL get-master-addr-by-name mymaster
 ```
 
-### Replication Topology
+### Verify Sentinel Quorum
 
+```bash
+# Check if quorum can be reached
+redis-cli -h 192.168.1.101 -p 26379 SENTINEL ckquorum mymaster
+
+# Expected: OK 3 usable Sentinels. Quorum and failover authorization is possible
 ```
-                    ┌─────────────────┐
-                    │   Master        │
-                    │ redis-node1     │
-                    │ 192.168.1.101   │
-                    └────────┬────────┘
-                             │
-              ┌──────────────┴──────────────┐
-              │                             │
-              ▼                             ▼
-    ┌─────────────────┐           ┌─────────────────┐
-    │   Replica 1     │           │   Replica 2     │
-    │ redis-node2     │           │ redis-node3     │
-    │ 192.168.1.102   │           │ 192.168.1.103   │
-    └─────────────────┘           └─────────────────┘
 
-    Sentinel 1, 2, 3 run on each node monitoring all Redis instances
+### Create Test Data
+
+```bash
+# Write test data to master
+redis-cli -h 192.168.1.101 -p 6379 SET test:key "test_value"
+redis-cli -h 192.168.1.101 -p 6379 SET test:counter 1000
+
+# Verify data replicated
+redis-cli -h 192.168.1.102 -p 6379 GET test:key
+redis-cli -h 192.168.1.103 -p 6379 GET test:key
 ```
 
 ---
 
-## 5. Failover Scenarios Overview
-
-### Test Scenarios Summary
-
-| Scenario | Type | Impact Level | Expected Recovery Time |
-|----------|------|--------------|------------------------|
-| Master Node Failure | Hard Failure | High | 10-30 seconds |
-| Replica Node Failure | Hard Failure | Low | Immediate (no impact) |
-| Sentinel Node Failure | Monitoring | Low | Immediate (if quorum maintained) |
-| Network Partition | Split-Brain | Critical | 30-60 seconds |
-| Graceful Shutdown | Planned | Low | 10-15 seconds |
-| Multiple Node Failure | Catastrophic | Critical | Manual intervention |
-| Disk Space Exhaustion | Resource | High | After disk cleanup |
-| Memory Exhaustion | Resource | High | After memory freed |
-| Rolling Restart | Maintenance | None | N/A |
-| Replication Validation | Validation | None | N/A |
-| Client Failover | Application | Low | < 10 seconds |
-| Persistence Recovery | Data Integrity | Medium | Depends on data size |
-
----
-
-## 6. Test Case 1: Master Node Failure
+## 4. Test Case 1: Master Node Failure
 
 ### Objective
-Simulate a catastrophic failure of the Redis master node and verify automatic failover to a replica with minimal data loss and downtime.
+Simulate failure of the Redis master node and verify automatic failover via Sentinel.
 
-### Severity: HIGH
-
-### Expected Outcome
-Automatic failover within 10-30 seconds (based on Sentinel configuration)
+| Attribute | Value |
+|-----------|-------|
+| Severity | HIGH |
+| Expected Recovery | 10-30 seconds |
+| Expected Data Loss | Minimal (uncommitted only) |
 
 ### Pre-Test Setup
 
 ```bash
-# 1. Verify current master
-redis-cli -h 192.168.1.101 -p 26379 sentinel get-master-addr-by-name mymaster
-# Expected: 192.168.1.101 6379
+# Identify current master
+redis-cli -h 192.168.1.101 -p 26379 SENTINEL get-master-addr-by-name mymaster
 
-# 2. Load test data
-redis-cli -h 192.168.1.101 -p 6379 SET test:failover:key "initial_value"
-redis-cli -h 192.168.1.101 -p 6379 SET test:counter 1000
+# Record message count
+redis-cli -h 192.168.1.101 -p 6379 DBSIZE
 
-# 3. Start continuous write test (in background)
-# This script writes incrementing values to detect data loss
-while true; do
-  redis-cli -h 192.168.1.101 -p 6379 INCR test:counter 2>/dev/null
-  sleep 0.1
-done &
-
-# 4. Record pre-test state
-redis-cli -h 192.168.1.101 -p 6379 GET test:counter
-redis-cli -h 192.168.1.101 -p 6379 info replication
+# Write test data
+for i in {1..1000}; do
+    redis-cli -h 192.168.1.101 -p 6379 SET test:msg:$i "message-$i"
+done
 ```
 
 ### Test Steps
@@ -254,793 +184,556 @@ redis-cli -h 192.168.1.101 -p 6379 info replication
 #### Step 1: Record Initial State
 
 ```bash
-# On any node, check Sentinel's view
-redis-cli -h 192.168.1.101 -p 26379 sentinel master mymaster
-
-# Record key metrics:
-# - Master IP/Port
-# - Number of replicas
-# - Quorum setting
-# - down-after-milliseconds
+# Record cluster state
+redis-cli -h 192.168.1.101 -p 6379 INFO replication
+redis-cli -h 192.168.1.101 -p 26379 SENTINEL master mymaster
 ```
 
-#### Step 2: Verify Replication Lag
+#### Step 2: Identify Current Master
 
 ```bash
-# Check replication is synchronized
-redis-cli -h 192.168.1.101 -p 6379 info replication | grep -E "slave|offset|lag"
+# Get master address
+redis-cli -h 192.168.1.101 -p 26379 SENTINEL get-master-addr-by-name mymaster
 
-# All replicas should have lag=0 or lag=1
+# Example output: 192.168.1.101 6379
 ```
 
-#### Step 3: Simulate Hard Failure (Kill Master)
+#### Step 3: Shutdown Master
 
 ```bash
-# On redis-node1 (master):
-# Method 1: Stop Redis service
-sudo systemctl stop redis
+# On the master node (192.168.1.101)
+redis-cli -h 192.168.1.101 -p 6379 SHUTDOWN NOSAVE
 
-# Method 2: Force kill process (more realistic failure simulation)
-sudo kill -9 $(pidof redis-server)
-
-# Method 3: Crash simulation
-sudo killall -SEGV redis-server
+# Or use DEBUG SLEEP to simulate hang
+redis-cli -h 192.168.1.101 -p 6379 DEBUG SLEEP 60
 ```
 
-#### Step 4: Monitor Failover (On Another Node)
+#### Step 4: Monitor Failover
 
 ```bash
-# Watch Sentinel logs in real-time
-sudo tail -f /var/log/redis/sentinel.log
+# On another node, watch for new master
+watch -n 1 "redis-cli -h 192.168.1.102 -p 26379 SENTINEL get-master-addr-by-name mymaster"
 
-# Or monitor via Sentinel CLI
-watch -n 1 "redis-cli -h 192.168.1.102 -p 26379 sentinel master mymaster | grep -E 'ip|port|flags|num-slaves'"
+# Check Sentinel logs
+tail -f /var/log/redis/sentinel.log
 
-# Key events to observe:
+# Key events:
 # +sdown master mymaster 192.168.1.101 6379
 # +odown master mymaster 192.168.1.101 6379 #quorum 2/2
-# +try-failover master mymaster 192.168.1.101 6379
-# +elected-leader master mymaster 192.168.1.101 6379
-# +promoted-slave slave 192.168.1.102:6379
 # +switch-master mymaster 192.168.1.101 6379 192.168.1.102 6379
 ```
 
-#### Step 5: Verify New Master Election
+#### Step 5: Verify New Master
 
 ```bash
 # Check new master address
-redis-cli -h 192.168.1.102 -p 26379 sentinel get-master-addr-by-name mymaster
-# Should return one of the replica IPs (e.g., 192.168.1.102 6379)
+redis-cli -h 192.168.1.102 -p 26379 SENTINEL get-master-addr-by-name mymaster
 
 # Verify new master accepts writes
-redis-cli -h 192.168.1.102 -p 6379 SET test:new_master "verified"
-redis-cli -h 192.168.1.102 -p 6379 GET test:new_master
+redis-cli -h 192.168.1.102 -p 6379 SET test:failover "success"
+redis-cli -h 192.168.1.102 -p 6379 GET test:failover
 ```
 
-#### Step 6: Check Replica Reconfiguration
+#### Step 6: Verify Data Integrity
 
 ```bash
-# Verify remaining replica is now following new master
-redis-cli -h 192.168.1.103 -p 6379 info replication
-# Should show: role:slave, master_host:192.168.1.102
+# Check data count
+redis-cli -h 192.168.1.102 -p 6379 DBSIZE
+
+# Verify test data
+redis-cli -h 192.168.1.102 -p 6379 GET test:key
 ```
-
-#### Step 7: Verify Data Integrity
-
-```bash
-# Check test data on new master
-redis-cli -h 192.168.1.102 -p 6379 GET test:failover:key
-# Expected: "initial_value"
-
-# Check counter value (may have some loss due to async replication)
-redis-cli -h 192.168.1.102 -p 6379 GET test:counter
-
-# Compare with expected value to measure data loss
-```
-
-#### Step 8: Monitor Sentinel Consensus
-
-```bash
-# All Sentinels should agree on new master
-redis-cli -h 192.168.1.101 -p 26379 sentinel get-master-addr-by-name mymaster 2>/dev/null
-redis-cli -h 192.168.1.102 -p 26379 sentinel get-master-addr-by-name mymaster
-redis-cli -h 192.168.1.103 -p 26379 sentinel get-master-addr-by-name mymaster
-# All should return the same new master IP
-```
-
-### Expected Results
-
-- Master node is detected as down within `down-after-milliseconds` (default 5 seconds)
-- Sentinels reach quorum and mark master as ODOWN
-- One replica is promoted to master automatically
-- Remaining replica reconfigures to follow new master
-- Data is preserved (minimal loss from async replication)
-- Write operations resume on new master
-- Sentinel configuration is updated automatically
-- No manual intervention required
 
 ### Post-Test Recovery
 
 ```bash
-# On the failed node (redis-node1):
-sudo systemctl start redis
+# Start old master (will rejoin as replica)
+redis-server /etc/redis/redis.conf
 
-# The node will automatically:
-# 1. Come up as a replica
-# 2. Connect to the new master
-# 3. Sync data from master
+# Verify it rejoined as replica
+redis-cli -h 192.168.1.101 -p 6379 INFO replication
+# Expected: role:slave
 
-# Verify node rejoined as replica
-redis-cli -h 192.168.1.101 -p 6379 info replication
-# Expected: role:slave, master_host:192.168.1.102
-
-# Verify Sentinel recognizes the node
-redis-cli -h 192.168.1.102 -p 26379 sentinel replicas mymaster
+# Verify Sentinel sees all nodes
+redis-cli -h 192.168.1.102 -p 26379 SENTINEL replicas mymaster
 ```
 
-### Data Loss Assessment
+### Expected Results
 
-> **Important**: Redis uses asynchronous replication by default. Data written to the master but not yet replicated to any replica will be lost during a hard failure. To minimize data loss:
-> - Use `WAIT` command for critical writes
-> - Configure `min-replicas-to-write` and `min-replicas-max-lag`
-> - Enable AOF with `appendfsync everysec` or `appendfsync always`
+- [ ] Sentinel detects master failure (SDOWN then ODOWN)
+- [ ] New master elected from replicas
+- [ ] Data preserved on new master
+- [ ] Old master rejoins as replica
+- [ ] Clients can write to new master
 
 ---
 
-## 7. Test Case 2: Replica Node Failure
+## 5. Test Case 2: Replica Node Failure
 
 ### Objective
-Verify that failure of a replica node has minimal impact on cluster operations and data availability continues normally.
+Verify that failure of a replica node has minimal impact on operations.
 
-### Severity: LOW
-
-### Expected Outcome
-No impact on write availability; reduced read capacity
+| Attribute | Value |
+|-----------|-------|
+| Severity | LOW |
+| Expected Recovery | Immediate |
+| Expected Data Loss | None |
 
 ### Test Steps
 
 #### Step 1: Identify Replica Node
 
 ```bash
-# Check replication topology
-redis-cli -h 192.168.1.101 -p 6379 info replication
+# Check replication status
+redis-cli -h 192.168.1.101 -p 6379 INFO replication
 
-# Choose a replica (e.g., redis-node2 at 192.168.1.102)
+# Choose a replica (e.g., 192.168.1.102)
 ```
 
-#### Step 2: Stop Replica Node
+#### Step 2: Shutdown Replica
 
 ```bash
-# On redis-node2:
-sudo systemctl stop redis
-
-# Or force kill:
-sudo kill -9 $(pidof redis-server)
+# On the replica node
+redis-cli -h 192.168.1.102 -p 6379 SHUTDOWN NOSAVE
 ```
 
-#### Step 3: Verify Master Detects Replica Loss
+#### Step 3: Verify Master Operations Continue
 
 ```bash
-# On master (redis-node1):
-redis-cli -h 192.168.1.101 -p 6379 info replication
-
-# Expected:
-# connected_slaves:1 (reduced from 2)
-# slave0 should only show redis-node3
-```
-
-#### Step 4: Verify Write Operations Continue
-
-```bash
-# Write operations should work normally
-redis-cli -h 192.168.1.101 -p 6379 SET test:replica:failure "test_value"
+# Write to master - should succeed
+redis-cli -h 192.168.1.101 -p 6379 SET test:replica:failure "test"
 redis-cli -h 192.168.1.101 -p 6379 GET test:replica:failure
-# Expected: "test_value"
+
+# Check master sees reduced replicas
+redis-cli -h 192.168.1.101 -p 6379 INFO replication
+# connected_slaves:1
 ```
 
-#### Step 5: Check Sentinel Status
+#### Step 4: Verify Sentinel Status
 
 ```bash
-# Sentinels will detect replica as down
-redis-cli -h 192.168.1.101 -p 26379 sentinel replicas mymaster
+# Sentinel will mark replica as down
+redis-cli -h 192.168.1.101 -p 26379 SENTINEL replicas mymaster
 
-# Failed replica should show s_down flag
+# Replica should show s_down flag
 ```
 
-#### Step 6: Verify Remaining Replica
+#### Step 5: Restart Replica
 
 ```bash
-# Remaining replica should be synchronized
-redis-cli -h 192.168.1.103 -p 6379 info replication
-# Should show: role:slave, master_link_status:up
+# On the replica node
+redis-server /etc/redis/redis.conf
 
-# Data should be replicated
-redis-cli -h 192.168.1.103 -p 6379 GET test:replica:failure
-# Expected: "test_value"
-```
+# Verify replica rejoined
+redis-cli -h 192.168.1.102 -p 6379 INFO replication
+# Expected: role:slave, master_link_status:up
 
-#### Step 7: Restart Failed Replica
-
-```bash
-# On redis-node2:
-sudo systemctl start redis
-
-# Replica will automatically reconnect and sync
-```
-
-#### Step 8: Verify Resynchronization
-
-```bash
-# Check replica reconnected
-redis-cli -h 192.168.1.101 -p 6379 info replication
-# Expected: connected_slaves:2
-
-# Verify data is synchronized
+# Verify data synced
 redis-cli -h 192.168.1.102 -p 6379 GET test:replica:failure
-# Expected: "test_value"
 ```
 
 ### Expected Results
 
-- No impact on write operations
-- Master continues operating normally
-- Remaining replica maintains synchronization
-- Failed replica rejoins and resynchronizes automatically
-- No data loss occurs
-- Sentinel updates replica status correctly
-
-> **Note**: Replica failure is the least impactful failure scenario. The cluster can lose all replicas and still accept writes (though this is not recommended for production).
+- [ ] No impact on master operations
+- [ ] Master continues accepting writes
+- [ ] Replica rejoins and syncs automatically
+- [ ] No data loss
 
 ---
 
-## 8. Test Case 3: Sentinel Node Failure
+## 6. Test Case 3: Sentinel Node Failure
 
 ### Objective
-Verify that failure of a Sentinel node does not impact Redis operations and failover capability is maintained with remaining Sentinels.
+Verify that failure of a Sentinel node does not impact Redis operations.
 
-### Severity: LOW (if quorum maintained)
-
-### Expected Outcome
-No impact on Redis operations; failover still possible with remaining Sentinels
+| Attribute | Value |
+|-----------|-------|
+| Severity | LOW |
+| Expected Recovery | Immediate |
+| Expected Data Loss | None |
 
 ### Test Steps
 
-#### Step 1: Check Initial Sentinel Status
+#### Step 1: Check Sentinel Status
 
 ```bash
-# Verify all Sentinels are running
-redis-cli -h 192.168.1.101 -p 26379 ping
-redis-cli -h 192.168.1.102 -p 26379 ping
-redis-cli -h 192.168.1.103 -p 26379 ping
+# Verify all Sentinels running
+redis-cli -h 192.168.1.101 -p 26379 SENTINEL sentinels mymaster
 
-# Check Sentinel view of cluster
-redis-cli -h 192.168.1.101 -p 26379 sentinel master mymaster
-# Note: num-other-sentinels should be 2
+# Should show 2 other Sentinels
 ```
 
 #### Step 2: Stop One Sentinel
 
 ```bash
-# On redis-node2:
-sudo systemctl stop redis-sentinel
-
-# Or if Sentinel is part of Redis service:
-sudo kill $(cat /var/run/redis/sentinel.pid)
+# On redis-node2
+redis-cli -h 192.168.1.102 -p 26379 SHUTDOWN
 ```
 
-#### Step 3: Verify Remaining Sentinels Detect Failure
+#### Step 3: Verify Remaining Sentinels
 
 ```bash
-# Check from another Sentinel
-redis-cli -h 192.168.1.101 -p 26379 sentinel sentinels mymaster
+# Check Sentinel count
+redis-cli -h 192.168.1.101 -p 26379 SENTINEL sentinels mymaster
 
-# Failed Sentinel should show s_down flag
-# num-other-sentinels should be 1
+# Should show 1 other Sentinel
 ```
 
-#### Step 4: Verify Redis Operations Continue
+#### Step 4: Verify Quorum Still Possible
+
+```bash
+# Check quorum
+redis-cli -h 192.168.1.101 -p 26379 SENTINEL ckquorum mymaster
+
+# With 2 Sentinels remaining, quorum (2) is still achievable
+```
+
+#### Step 5: Verify Redis Operations
 
 ```bash
 # Redis should work normally
-redis-cli -h 192.168.1.101 -p 6379 SET test:sentinel:failure "test"
-redis-cli -h 192.168.1.101 -p 6379 GET test:sentinel:failure
+redis-cli -h 192.168.1.101 -p 6379 SET test:sentinel "working"
+redis-cli -h 192.168.1.101 -p 6379 GET test:sentinel
 ```
 
-#### Step 5: Test Failover Capability (Optional)
+#### Step 6: Restart Sentinel
 
 ```bash
-# With 2 Sentinels remaining (quorum=2), failover should still work
-# Trigger manual failover to verify:
-redis-cli -h 192.168.1.101 -p 26379 sentinel failover mymaster
-
-# Monitor failover progress
-redis-cli -h 192.168.1.101 -p 26379 sentinel get-master-addr-by-name mymaster
-```
-
-#### Step 6: Restart Failed Sentinel
-
-```bash
-# On redis-node2:
-sudo systemctl start redis-sentinel
+# On redis-node2
+redis-sentinel /etc/redis/sentinel.conf
 
 # Verify Sentinel rejoined
-redis-cli -h 192.168.1.101 -p 26379 sentinel sentinels mymaster
-# Should show 2 other Sentinels again
+redis-cli -h 192.168.1.101 -p 26379 SENTINEL sentinels mymaster
 ```
 
 ### Expected Results
 
-- No impact on Redis read/write operations
-- Remaining Sentinels maintain quorum (2 out of 3)
-- Automatic failover still possible
-- Failed Sentinel rejoins cluster automatically
-- No data loss occurs
-
-> **Warning**: If more than one Sentinel fails and quorum is lost, automatic failover becomes impossible. Manual intervention would be required.
+- [ ] No impact on Redis operations
+- [ ] Remaining Sentinels maintain quorum
+- [ ] Failover still possible with 2 Sentinels
+- [ ] Sentinel rejoins automatically
 
 ---
 
-## 9. Test Case 4: Network Partition (Split-Brain)
+## 7. Test Case 4: Network Partition
 
 ### Objective
-Test cluster behavior when network connectivity is lost between nodes, creating a partition scenario. Verify partition handling and data consistency.
+Test cluster behavior during network partition.
 
-### Severity: CRITICAL
-
-### Expected Outcome
-Master on minority side stops accepting writes; failover occurs on majority side
+| Attribute | Value |
+|-----------|-------|
+| Severity | CRITICAL |
+| Expected Recovery | 30-60 seconds |
+| Partition Handling | Quorum-based |
 
 ### Prerequisites
 
 ```bash
-# Verify current configuration
-redis-cli -h 192.168.1.101 -p 6379 config get min-replicas-to-write
-redis-cli -h 192.168.1.101 -p 6379 config get min-replicas-max-lag
-
-# Recommended settings for partition safety:
-# min-replicas-to-write = 1 (at least 1 replica must acknowledge)
-# min-replicas-max-lag = 10 (replica must be within 10 seconds)
+# Configure min-replicas for safety
+redis-cli -h 192.168.1.101 -p 6379 CONFIG SET min-replicas-to-write 1
+redis-cli -h 192.168.1.101 -p 6379 CONFIG SET min-replicas-max-lag 10
 ```
-
-> **Warning**: Network partitions are dangerous. Improper handling can lead to data inconsistency and split-brain scenarios where two masters exist simultaneously.
 
 ### Test Steps
 
 #### Step 1: Record Pre-Partition State
 
 ```bash
-# Document current master and replication status
-redis-cli -h 192.168.1.101 -p 6379 info replication
-redis-cli -h 192.168.1.101 -p 26379 sentinel master mymaster
-
-# Record current data
-redis-cli -h 192.168.1.101 -p 6379 GET test:counter
+redis-cli -h 192.168.1.101 -p 6379 INFO replication
+redis-cli -h 192.168.1.101 -p 26379 SENTINEL master mymaster
 ```
 
 #### Step 2: Create Network Partition
 
 ```bash
-# Method: Using iptables to isolate master (node1) from replicas (node2, node3)
-
-# On redis-node1 (master), block traffic from other nodes:
+# On redis-node1 (master), isolate from other nodes
 sudo iptables -A INPUT -s 192.168.1.102 -j DROP
 sudo iptables -A INPUT -s 192.168.1.103 -j DROP
 sudo iptables -A OUTPUT -d 192.168.1.102 -j DROP
 sudo iptables -A OUTPUT -d 192.168.1.103 -j DROP
 
-# This creates partition: [node1] | [node2, node3]
-# node1 (old master) is isolated
-# node2, node3 (replicas + 2 Sentinels) can reach each other
+# Creates: [node1] | [node2, node3]
 ```
 
-#### Step 3: Observe Partition Detection
+#### Step 3: Observe Partition Behavior
 
 ```bash
-# On node1 (isolated):
-redis-cli -h 192.168.1.101 -p 6379 info replication
-# connected_slaves will drop to 0
+# On isolated master (node1)
+redis-cli -h 192.168.1.101 -p 6379 INFO replication
+# connected_slaves:0
 
-# On node2 or node3:
-redis-cli -h 192.168.1.102 -p 26379 sentinel master mymaster
-# Master should show as s_down or o_down
+# On majority side (node2)
+redis-cli -h 192.168.1.102 -p 26379 SENTINEL get-master-addr-by-name mymaster
+# Should elect new master
 ```
 
-#### Step 4: Monitor Failover on Majority Side
+#### Step 4: Test Writes on Both Sides
 
 ```bash
-# On node2 or node3, watch for failover:
-sudo tail -f /var/log/redis/sentinel.log
+# On isolated old master (should FAIL if min-replicas-to-write=1)
+redis-cli -h 192.168.1.101 -p 6379 SET partition:test "minority"
+# Error: NOREPLICAS
 
-# Key events:
-# +sdown master mymaster 192.168.1.101 6379
-# +odown master mymaster 192.168.1.101 6379 #quorum 2/2
-# +failover-state-select-slave master mymaster
-# +selected-slave slave 192.168.1.102:6379
-# +switch-master mymaster 192.168.1.101 6379 192.168.1.102 6379
-
-# Verify new master
-redis-cli -h 192.168.1.102 -p 26379 sentinel get-master-addr-by-name mymaster
+# On new master (majority side)
+redis-cli -h 192.168.1.102 -p 6379 SET partition:test "majority"
+# Should succeed
 ```
 
-#### Step 5: Test Write Behavior on Both Sides
+#### Step 5: Restore Network
 
 ```bash
-# On isolated old master (node1):
-redis-cli -h 192.168.1.101 -p 6379 SET partition:old_master "data_on_old"
-# Should FAIL if min-replicas-to-write is configured
-# Error: NOREPLICAS Not enough good replicas to write
-
-# On new master (node2):
-redis-cli -h 192.168.1.102 -p 6379 SET partition:new_master "data_on_new"
-# Should SUCCEED
-```
-
-#### Step 6: Restore Network Connectivity
-
-```bash
-# On node1, remove iptables rules:
-sudo iptables -D INPUT -s 192.168.1.102 -j DROP
-sudo iptables -D INPUT -s 192.168.1.103 -j DROP
-sudo iptables -D OUTPUT -d 192.168.1.102 -j DROP
-sudo iptables -D OUTPUT -d 192.168.1.103 -j DROP
-
-# Or flush all iptables rules:
+# On node1
 sudo iptables -F
 ```
 
-#### Step 7: Verify Partition Healing
+#### Step 6: Verify Cluster Heals
 
 ```bash
-# Old master (node1) should:
-# 1. Detect it's no longer master
-# 2. Convert to replica
-# 3. Sync with new master
+# Wait for cluster to reform
+sleep 30
 
-redis-cli -h 192.168.1.101 -p 6379 info replication
-# Expected: role:slave, master_host:192.168.1.102
+# Old master should become replica
+redis-cli -h 192.168.1.101 -p 6379 INFO replication
+# Expected: role:slave
 
-# Verify cluster is healthy
-redis-cli -h 192.168.1.102 -p 6379 info replication
-# Expected: connected_slaves:2
-```
-
-#### Step 8: Check Data Consistency
-
-```bash
-# Verify data on all nodes
-redis-cli -h 192.168.1.102 -p 6379 GET partition:new_master
-redis-cli -h 192.168.1.101 -p 6379 GET partition:new_master
-redis-cli -h 192.168.1.103 -p 6379 GET partition:new_master
-# All should return: "data_on_new"
-
-# Data written to old master during partition (if min-replicas-to-write=0) may be lost
-redis-cli -h 192.168.1.102 -p 6379 GET partition:old_master
-# May return: (nil) - data lost
+# Check all Sentinels agree on master
+redis-cli -h 192.168.1.101 -p 26379 SENTINEL get-master-addr-by-name mymaster
+redis-cli -h 192.168.1.102 -p 26379 SENTINEL get-master-addr-by-name mymaster
+redis-cli -h 192.168.1.103 -p 26379 SENTINEL get-master-addr-by-name mymaster
 ```
 
 ### Expected Results
 
-- Partition is detected by Sentinels within `down-after-milliseconds`
-- Majority partition (2 nodes) elects new master
-- Old master (minority) stops accepting writes (if properly configured)
-- After partition heals, old master becomes replica
-- Data written to majority side is preserved
-- Data written to isolated old master may be lost
-
-> **Critical Configuration**: To prevent split-brain data loss, configure:
-> ```
-> min-replicas-to-write 1
-> min-replicas-max-lag 10
-> ```
-> This ensures master stops accepting writes when it can't reach any replica.
+- [ ] Isolated master stops accepting writes (with min-replicas)
+- [ ] Majority side elects new master
+- [ ] Old master becomes replica after partition heals
+- [ ] No data corruption
 
 ---
 
-## 10. Test Case 5: Graceful Node Shutdown
+## 8. Test Case 5: Graceful Node Shutdown
 
 ### Objective
-Verify that planned maintenance shutdown of a node (master or replica) allows proper failover and data synchronization without data loss.
+Verify proper failover during planned maintenance.
 
-### Severity: LOW
-
-### Expected Outcome
-Zero data loss, controlled failover for master shutdown
+| Attribute | Value |
+|-----------|-------|
+| Severity | LOW |
+| Expected Recovery | 10-15 seconds |
+| Expected Data Loss | None |
 
 ### Test Steps
 
-#### Step 1: Graceful Master Shutdown
+#### Step 1: Check Current Master
 
 ```bash
-# Verify current state
-redis-cli -h 192.168.1.101 -p 6379 info replication
-redis-cli -h 192.168.1.101 -p 6379 DBSIZE
-
-# Option 1: Trigger manual failover first (recommended)
-redis-cli -h 192.168.1.101 -p 26379 sentinel failover mymaster
-
-# Wait for failover to complete
-sleep 10
-redis-cli -h 192.168.1.102 -p 26379 sentinel get-master-addr-by-name mymaster
-
-# Then stop the old master (now a replica)
-sudo systemctl stop redis
+redis-cli -h 192.168.1.101 -p 26379 SENTINEL get-master-addr-by-name mymaster
 ```
 
+#### Step 2: Trigger Manual Failover (If Shutting Down Master)
+
 ```bash
-# Option 2: Use Redis SHUTDOWN command (cleanest)
-# This triggers proper data saving and notifies Sentinels
+# Request Sentinel to perform failover
+redis-cli -h 192.168.1.101 -p 26379 SENTINEL failover mymaster
+
+# Verify new master elected
+redis-cli -h 192.168.1.101 -p 26379 SENTINEL get-master-addr-by-name mymaster
+```
+
+#### Step 3: Graceful Shutdown
+
+```bash
+# On the node being shut down
 redis-cli -h 192.168.1.101 -p 6379 SHUTDOWN SAVE
 ```
 
-#### Step 2: Verify Failover Occurred
+#### Step 4: Verify Cluster Status
 
 ```bash
-# Check new master
-redis-cli -h 192.168.1.102 -p 26379 sentinel get-master-addr-by-name mymaster
+# Check new master is operating
+redis-cli -h 192.168.1.102 -p 6379 INFO replication
 
-# Verify replication
-redis-cli -h 192.168.1.102 -p 6379 info replication
+# Verify writes work
+redis-cli -h 192.168.1.102 -p 6379 SET test:graceful "shutdown"
 ```
 
-#### Step 3: Verify Data Integrity
+#### Step 5: Restart Node
 
 ```bash
-# All data should be preserved
-redis-cli -h 192.168.1.102 -p 6379 DBSIZE
-# Should match pre-shutdown count
-
-redis-cli -h 192.168.1.102 -p 6379 GET test:key
-# Should return expected value
-```
-
-#### Step 4: Restart Node
-
-```bash
-# On shutdown node:
-sudo systemctl start redis
+# Start Redis
+redis-server /etc/redis/redis.conf
 
 # Node will join as replica
-redis-cli -h 192.168.1.101 -p 6379 info replication
-# Expected: role:slave
-```
-
-#### Step 5: Graceful Replica Shutdown
-
-```bash
-# For replica, simple shutdown is sufficient
-redis-cli -h 192.168.1.103 -p 6379 SHUTDOWN SAVE
-
-# Or via systemctl
-sudo systemctl stop redis
+redis-cli -h 192.168.1.101 -p 6379 INFO replication
 ```
 
 ### Expected Results
 
-- No data loss with graceful shutdown
-- Manual failover before master shutdown ensures clean transition
-- SHUTDOWN SAVE ensures data is persisted
-- Node rejoins as replica after restart
-- Replication resumes automatically
-
-> **Best Practice**: Always use `SHUTDOWN SAVE` or trigger manual failover before planned master maintenance.
+- [ ] Manual failover completes smoothly
+- [ ] No data loss with SHUTDOWN SAVE
+- [ ] Node rejoins as replica
 
 ---
 
-## 11. Test Case 6: Multiple Node Failure
+## 9. Test Case 6: Quorum Loss
 
 ### Objective
-Test cluster behavior when multiple nodes fail simultaneously or in quick succession. This is a catastrophic scenario requiring manual intervention.
+Test behavior when Sentinel quorum is lost.
 
-### Severity: CRITICAL
+| Attribute | Value |
+|-----------|-------|
+| Severity | CRITICAL |
+| Recovery | Manual intervention |
 
-### Expected Outcome
-Cluster unavailable if majority fails; manual recovery required
-
-> **Danger**: This test will make Redis unavailable. Only perform in test/staging environment.
-
-### Scenario A: Two Replicas Fail (Master Survives)
-
-```bash
-# Stop both replicas
-# On redis-node2:
-sudo systemctl stop redis
-
-# On redis-node3:
-sudo systemctl stop redis
-
-# Master continues operating but with degraded safety
-redis-cli -h 192.168.1.101 -p 6379 info replication
-# connected_slaves:0
-
-# If min-replicas-to-write > 0, writes will fail
-redis-cli -h 192.168.1.101 -p 6379 SET test:key "value"
-# Error: NOREPLICAS (if configured)
-```
-
-### Scenario B: Master + One Replica Fail
-
-```bash
-# Stop master
-sudo systemctl stop redis  # on redis-node1
-
-# Stop one replica
-sudo systemctl stop redis  # on redis-node2
-
-# Remaining node (redis-node3) has:
-# - 1 Redis server
-# - 1 Sentinel
-# Cannot achieve quorum (need 2 Sentinels)
-# Cannot failover automatically
-
-# Check Sentinel
-redis-cli -h 192.168.1.103 -p 26379 sentinel master mymaster
-# Will show master as down but cannot failover
-```
-
-### Recovery Procedure
-
-```bash
-# 1. Start nodes in order - replicas first
-# On redis-node2 (replica):
-sudo systemctl start redis
-
-# On redis-node3 (replica):
-sudo systemctl start redis
-
-# 2. Start master last
-# On redis-node1 (master):
-sudo systemctl start redis
-
-# 3. Verify cluster recovery
-redis-cli -h 192.168.1.101 -p 6379 info replication
-redis-cli -h 192.168.1.101 -p 26379 sentinel master mymaster
-
-# 4. If master changed during outage, verify data consistency
-```
-
-### Manual Failover (If Needed)
-
-```bash
-# If old master is down and you need to promote a replica manually:
-
-# 1. On the replica you want to promote:
-redis-cli -h 192.168.1.102 -p 6379 REPLICAOF NO ONE
-
-# 2. Point other replicas to new master:
-redis-cli -h 192.168.1.103 -p 6379 REPLICAOF 192.168.1.102 6379
-
-# 3. Update Sentinel configuration manually or restart Sentinels
-```
-
-> **Warning**: Manual failover may result in data loss if the promoted replica was behind the failed master.
-
----
-
-## 12. Test Case 7: Disk Space Exhaustion
-
-### Objective
-Verify Redis behavior when disk space is exhausted and test recovery procedures.
-
-### Severity: HIGH
-
-### Expected Outcome
-Redis stops accepting writes; recovers after disk space freed
+> **Warning**: This will prevent automatic failover. Test environment only.
 
 ### Test Steps
 
-#### Step 1: Check Current Disk Usage
+#### Step 1: Stop Two Sentinels
 
 ```bash
-# Check disk space
-df -h /var/lib/redis
+# Stop Sentinel on node2
+redis-cli -h 192.168.1.102 -p 26379 SHUTDOWN
 
-# Check Redis persistence configuration
+# Stop Sentinel on node3
+redis-cli -h 192.168.1.103 -p 26379 SHUTDOWN
+```
+
+#### Step 2: Verify Quorum Lost
+
+```bash
+# Check quorum
+redis-cli -h 192.168.1.101 -p 26379 SENTINEL ckquorum mymaster
+
+# Expected: NOQUORUM (only 1 Sentinel, need 2)
+```
+
+#### Step 3: Test Failover (Should Fail)
+
+```bash
+# Try to trigger failover
+redis-cli -h 192.168.1.101 -p 26379 SENTINEL failover mymaster
+
+# Will fail due to no quorum
+```
+
+#### Step 4: Verify Redis Still Works
+
+```bash
+# Redis operations continue (no failover capability)
+redis-cli -h 192.168.1.101 -p 6379 SET test:noquorum "working"
+```
+
+#### Step 5: Recovery
+
+```bash
+# Start Sentinels
+redis-sentinel /etc/redis/sentinel.conf  # on node2
+redis-sentinel /etc/redis/sentinel.conf  # on node3
+
+# Verify quorum restored
+redis-cli -h 192.168.1.101 -p 26379 SENTINEL ckquorum mymaster
+```
+
+### Expected Results
+
+- [ ] Automatic failover disabled without quorum
+- [ ] Redis operations continue
+- [ ] Quorum restored after Sentinels start
+
+---
+
+## 10. Test Case 7: Disk Alarm
+
+### Objective
+Verify behavior when disk space is exhausted.
+
+| Attribute | Value |
+|-----------|-------|
+| Severity | HIGH |
+| Impact | Persistence fails |
+
+### Test Steps
+
+#### Step 1: Check Persistence Config
+
+```bash
 redis-cli -h 192.168.1.101 -p 6379 CONFIG GET save
 redis-cli -h 192.168.1.101 -p 6379 CONFIG GET appendonly
 ```
 
-#### Step 2: Simulate Disk Exhaustion
+#### Step 2: Simulate Disk Full
 
 ```bash
 # Create large file to fill disk
 sudo fallocate -l 40G /var/lib/redis/large-file
-
-# Or fill with data through Redis
-# (This will trigger RDB/AOF write failures)
 ```
 
-#### Step 3: Trigger Persistence Operation
+#### Step 3: Trigger Save
 
 ```bash
 # Trigger background save
 redis-cli -h 192.168.1.101 -p 6379 BGSAVE
 
-# Check last save status
+# Check save status
 redis-cli -h 192.168.1.101 -p 6379 LASTSAVE
 redis-cli -h 192.168.1.101 -p 6379 INFO persistence
+# rdb_last_bgsave_status:err
 ```
 
-#### Step 4: Observe Behavior
+#### Step 4: Verify Write Behavior
 
 ```bash
-# Check Redis logs for errors
-sudo tail -f /var/log/redis/redis.log
-
-# Expected errors:
-# MISCONF Redis is configured to save RDB snapshots
-# Can't save in background: fork: Cannot allocate memory
-# Background saving error
-
-# Redis may stop accepting writes if:
-# stop-writes-on-bgsave-error yes (default)
-redis-cli -h 192.168.1.101 -p 6379 SET test:disk:full "value"
-# Error: MISCONF
+# If stop-writes-on-bgsave-error is yes (default)
+redis-cli -h 192.168.1.101 -p 6379 SET test:disk "test"
+# May return: MISCONF error
 ```
 
-#### Step 5: Free Disk Space
+#### Step 5: Clear Disk
 
 ```bash
-# Remove the test file
+# Remove test file
 sudo rm /var/lib/redis/large-file
 
-# Verify disk space
-df -h /var/lib/redis
-```
-
-#### Step 6: Verify Recovery
-
-```bash
-# Trigger save again
+# Retry save
 redis-cli -h 192.168.1.101 -p 6379 BGSAVE
 
-# Check persistence status
+# Verify success
 redis-cli -h 192.168.1.101 -p 6379 INFO persistence
 # rdb_last_bgsave_status:ok
-
-# Writes should work again
-redis-cli -h 192.168.1.101 -p 6379 SET test:recovered "yes"
 ```
 
 ### Expected Results
 
-- Redis stops accepting writes when disk is full (if `stop-writes-on-bgsave-error yes`)
-- Error messages appear in logs
-- Writes resume after disk space is freed
-- Manual BGSAVE may be needed to clear error state
-- No data corruption occurs
+- [ ] Save operations fail when disk full
+- [ ] Writes blocked if stop-writes-on-bgsave-error enabled
+- [ ] Operations resume after disk freed
 
 ---
 
-## 13. Test Case 8: Memory Exhaustion
+## 11. Test Case 8: Memory Exhaustion
 
 ### Objective
-Test Redis behavior under high memory usage and verify eviction policies and recovery.
+Test behavior under memory pressure.
 
-### Severity: HIGH
-
-### Expected Outcome
-Redis applies eviction policy or returns OOM errors
+| Attribute | Value |
+|-----------|-------|
+| Severity | HIGH |
+| Impact | Depends on eviction policy |
 
 ### Test Steps
 
 #### Step 1: Check Memory Configuration
 
 ```bash
-# Check current memory settings
 redis-cli -h 192.168.1.101 -p 6379 CONFIG GET maxmemory
 redis-cli -h 192.168.1.101 -p 6379 CONFIG GET maxmemory-policy
-
-# Common policies:
-# noeviction - return error on writes when memory limit reached
-# allkeys-lru - evict least recently used keys
-# volatile-lru - evict LRU keys with TTL set
-# allkeys-random - evict random keys
 ```
 
-#### Step 2: Set Memory Limit for Testing
+#### Step 2: Set Memory Limit
 
 ```bash
-# Set a low limit for testing (e.g., 100MB)
+# Set low limit for testing
 redis-cli -h 192.168.1.101 -p 6379 CONFIG SET maxmemory 100mb
 redis-cli -h 192.168.1.101 -p 6379 CONFIG SET maxmemory-policy allkeys-lru
 ```
@@ -1048,183 +741,128 @@ redis-cli -h 192.168.1.101 -p 6379 CONFIG SET maxmemory-policy allkeys-lru
 #### Step 3: Fill Memory
 
 ```bash
-# Generate large amount of data
-for i in $(seq 1 100000); do
-    redis-cli -h 192.168.1.101 -p 6379 SET key:$i "$(head -c 1000 /dev/urandom | base64)"
+# Generate data until limit reached
+for i in {1..100000}; do
+    redis-cli -h 192.168.1.101 -p 6379 SET key:$i "$(head -c 1000 /dev/urandom | base64)" 2>/dev/null
 done
-
-# Monitor memory usage
-redis-cli -h 192.168.1.101 -p 6379 INFO memory
 ```
 
-#### Step 4: Observe Eviction Behavior
+#### Step 4: Observe Behavior
 
 ```bash
-# With allkeys-lru:
-# Older keys should be evicted to make room
+# Check memory usage
+redis-cli -h 192.168.1.101 -p 6379 INFO memory | grep used_memory_human
 
 # Check eviction stats
-redis-cli -h 192.168.1.101 -p 6379 INFO stats | grep evicted
-# evicted_keys: <number>
-
-# With noeviction:
-# Writes should fail with OOM error
-redis-cli -h 192.168.1.101 -p 6379 SET new:key "value"
-# Error: OOM command not allowed when used memory > 'maxmemory'
+redis-cli -h 192.168.1.101 -p 6379 INFO stats | grep evicted_keys
 ```
 
-#### Step 5: Verify Read Operations Continue
+#### Step 5: Recovery
 
 ```bash
-# Reads should always work
-redis-cli -h 192.168.1.101 -p 6379 GET key:1
-# Should return value (if not evicted)
-```
-
-#### Step 6: Recovery
-
-```bash
-# Option 1: Increase memory limit
+# Increase memory limit
 redis-cli -h 192.168.1.101 -p 6379 CONFIG SET maxmemory 2gb
 
-# Option 2: Delete data
+# Or flush data
 redis-cli -h 192.168.1.101 -p 6379 FLUSHDB
-
-# Option 3: Let eviction handle it (if eviction policy set)
 ```
 
 ### Expected Results
 
-- Redis respects maxmemory limit
-- Eviction policy is applied correctly
-- OOM errors returned when appropriate
-- Read operations continue regardless of memory state
-- No crash or data corruption
+- [ ] Eviction policy applied when limit reached
+- [ ] OOM errors returned (if noeviction policy)
+- [ ] Reads continue working
+- [ ] Normal operation after limit increased
 
 ---
 
-## 14. Test Case 9: Rolling Restart
+## 12. Test Case 9: Rolling Restart
 
 ### Objective
-Perform a rolling restart of all cluster nodes with zero downtime.
+Perform rolling restart with zero downtime.
 
-### Severity: LOW
-
-### Expected Outcome
-Zero downtime, continuous read/write availability
+| Attribute | Value |
+|-----------|-------|
+| Severity | LOW |
+| Expected Downtime | None |
 
 ### Test Steps
 
 #### Step 1: Verify Initial State
 
 ```bash
-# Check cluster health
-redis-cli -h 192.168.1.101 -p 6379 info replication
-redis-cli -h 192.168.1.101 -p 26379 sentinel master mymaster
-
-# Start continuous test in background
-while true; do
-    redis-cli -h 192.168.1.101 -p 6379 INCR rolling:restart:counter
-    sleep 0.5
-done &
+redis-cli -h 192.168.1.101 -p 6379 INFO replication
+redis-cli -h 192.168.1.101 -p 26379 SENTINEL master mymaster
 ```
 
-#### Step 2: Restart Replica 1 (Node 3)
+#### Step 2: Restart Replicas First
 
 ```bash
-# On redis-node3:
-sudo systemctl restart redis
+# Restart replica 1 (node3)
+redis-cli -h 192.168.1.103 -p 6379 SHUTDOWN SAVE
+redis-server /etc/redis/redis.conf  # on node3
 
-# Wait for node to come back online
-sleep 5
+# Wait for sync
+redis-cli -h 192.168.1.103 -p 6379 INFO replication
 
-# Verify node is synced
-redis-cli -h 192.168.1.103 -p 6379 info replication
-# Should show: role:slave, master_link_status:up
+# Restart replica 2 (node2)
+redis-cli -h 192.168.1.102 -p 6379 SHUTDOWN SAVE
+redis-server /etc/redis/redis.conf  # on node2
 ```
 
-#### Step 3: Restart Replica 2 (Node 2)
+#### Step 3: Failover Then Restart Master
 
 ```bash
-# On redis-node2:
-sudo systemctl restart redis
+# Trigger failover
+redis-cli -h 192.168.1.101 -p 26379 SENTINEL failover mymaster
 
-# Wait for node to come back online
-sleep 5
-
-# Verify node is synced
-redis-cli -h 192.168.1.102 -p 6379 info replication
-```
-
-#### Step 4: Failover Master (Node 1)
-
-```bash
-# Trigger manual failover before restarting master
-redis-cli -h 192.168.1.101 -p 26379 sentinel failover mymaster
-
-# Wait for failover to complete
+# Wait for failover
 sleep 10
 
 # Verify new master
-redis-cli -h 192.168.1.102 -p 26379 sentinel get-master-addr-by-name mymaster
+redis-cli -h 192.168.1.102 -p 26379 SENTINEL get-master-addr-by-name mymaster
+
+# Restart old master (now replica)
+redis-cli -h 192.168.1.101 -p 6379 SHUTDOWN SAVE
+redis-server /etc/redis/redis.conf  # on node1
 ```
 
-#### Step 5: Restart Old Master (Now Replica)
+#### Step 4: Verify Complete Cluster
 
 ```bash
-# On redis-node1 (now a replica):
-sudo systemctl restart redis
-
-# Verify node rejoined
-redis-cli -h 192.168.1.101 -p 6379 info replication
-# Should show: role:slave
+redis-cli -h 192.168.1.102 -p 6379 INFO replication
+redis-cli -h 192.168.1.102 -p 26379 SENTINEL master mymaster
 ```
 
-#### Step 6: Verify Zero Data Loss
+### Expected Results
 
-```bash
-# Stop the test counter
-# Check final value
-redis-cli -h 192.168.1.102 -p 6379 GET rolling:restart:counter
-
-# All increments should be accounted for
-```
-
-### Best Practices for Rolling Restart
-
-- Always restart replicas before master
-- Trigger manual failover before restarting current master
-- Wait for each node to fully sync before proceeding
-- Monitor replication lag during process
-- Schedule during low-traffic periods
-- Have rollback plan ready
+- [ ] Zero downtime during restart
+- [ ] All data preserved
+- [ ] Replication working after restart
 
 ---
 
-## 15. Test Case 10: Data Replication Validation
+## 13. Test Case 10: Data Replication Validation
 
 ### Objective
-Verify that data is correctly replicated from master to all replicas in real-time.
+Verify data is correctly replicated to all replicas.
 
-### Severity: MEDIUM
-
-### Expected Outcome
-All data correctly replicated with minimal lag
+| Attribute | Value |
+|-----------|-------|
+| Severity | MEDIUM |
+| Purpose | Configuration validation |
 
 ### Test Steps
 
 #### Step 1: Check Replication Status
 
 ```bash
-# On master:
-redis-cli -h 192.168.1.101 -p 6379 info replication
+redis-cli -h 192.168.1.101 -p 6379 INFO replication
 
-# Key metrics:
-# - connected_slaves: 2
-# - slave0, slave1: state=online, lag=0
+# Verify: connected_slaves:2, all slaves state=online, lag=0
 ```
 
-#### Step 2: Write Test Data on Master
+#### Step 2: Write Test Data
 
 ```bash
 # Write various data types
@@ -1235,211 +873,114 @@ redis-cli -h 192.168.1.101 -p 6379 SADD set:key member1 member2 member3
 redis-cli -h 192.168.1.101 -p 6379 ZADD zset:key 1 one 2 two 3 three
 ```
 
-#### Step 3: Verify Data on Replicas
+#### Step 3: Verify on Replicas
 
 ```bash
-# On replica 1 (redis-node2):
+# On replica 1
 redis-cli -h 192.168.1.102 -p 6379 GET string:key
 redis-cli -h 192.168.1.102 -p 6379 HGETALL hash:key
 redis-cli -h 192.168.1.102 -p 6379 LRANGE list:key 0 -1
-redis-cli -h 192.168.1.102 -p 6379 SMEMBERS set:key
-redis-cli -h 192.168.1.102 -p 6379 ZRANGE zset:key 0 -1 WITHSCORES
 
-# On replica 2 (redis-node3):
-# Repeat same commands
+# On replica 2
+redis-cli -h 192.168.1.103 -p 6379 GET string:key
+redis-cli -h 192.168.1.103 -p 6379 SMEMBERS set:key
+redis-cli -h 192.168.1.103 -p 6379 ZRANGE zset:key 0 -1 WITHSCORES
 ```
 
-#### Step 4: Test Replication Lag Under Load
+#### Step 4: Verify Replication Offset
 
 ```bash
-# Generate high write load on master
-redis-benchmark -h 192.168.1.101 -p 6379 -t set -n 100000 -q
+# Compare offsets
+redis-cli -h 192.168.1.101 -p 6379 INFO replication | grep master_repl_offset
+redis-cli -h 192.168.1.102 -p 6379 INFO replication | grep slave_repl_offset
+redis-cli -h 192.168.1.103 -p 6379 INFO replication | grep slave_repl_offset
 
-# Monitor replication lag during load
-watch -n 1 "redis-cli -h 192.168.1.101 -p 6379 info replication | grep lag"
-```
-
-#### Step 5: Verify Offset Synchronization
-
-```bash
-# Compare master and replica offsets
-redis-cli -h 192.168.1.101 -p 6379 info replication | grep master_repl_offset
-redis-cli -h 192.168.1.102 -p 6379 info replication | grep slave_repl_offset
-redis-cli -h 192.168.1.103 -p 6379 info replication | grep slave_repl_offset
-
-# Offsets should be close (within a few bytes)
+# Offsets should be close
 ```
 
 ### Expected Results
 
-- All data types correctly replicated
-- Replication lag minimal (< 1 second under normal load)
-- Offsets synchronized across nodes
-- No data corruption during replication
+- [ ] All data types replicated correctly
+- [ ] Replication offsets match
+- [ ] No lag between master and replicas
 
 ---
 
-## 16. Test Case 11: Client Connection Failover
+## 14. Test Case 11: Client Connection Failover
 
 ### Objective
-Verify that client applications can reconnect automatically when the connected node fails.
+Verify clients reconnect during node failures.
 
-### Severity: MEDIUM
-
-### Expected Outcome
-Clients reconnect within 10 seconds using Sentinel-aware drivers
+| Attribute | Value |
+|-----------|-------|
+| Severity | MEDIUM |
+| Expected Reconnect | < 10 seconds |
 
 ### Prerequisites
 
-Client application must use Sentinel-aware Redis driver that:
-- Queries Sentinel for current master address
-- Automatically reconnects on connection failure
-- Follows Sentinel redirects
-
-### Example Client Configurations
-
-#### Python (redis-py)
-
-```python
-from redis.sentinel import Sentinel
-
-sentinel = Sentinel([
-    ('192.168.1.101', 26379),
-    ('192.168.1.102', 26379),
-    ('192.168.1.103', 26379)
-], socket_timeout=0.5)
-
-# Get master connection
-master = sentinel.master_for('mymaster', socket_timeout=0.5)
-
-# Get replica connection (for reads)
-replica = sentinel.slave_for('mymaster', socket_timeout=0.5)
-
-# Write to master
-master.set('key', 'value')
-
-# Read from replica
-value = replica.get('key')
-```
-
-#### Java (Jedis)
-
-```java
-Set<String> sentinels = new HashSet<>();
-sentinels.add("192.168.1.101:26379");
-sentinels.add("192.168.1.102:26379");
-sentinels.add("192.168.1.103:26379");
-
-JedisSentinelPool pool = new JedisSentinelPool("mymaster", sentinels);
-try (Jedis jedis = pool.getResource()) {
-    jedis.set("key", "value");
-}
-```
-
-#### Node.js (ioredis)
-
-```javascript
-const Redis = require('ioredis');
-
-const redis = new Redis({
-    sentinels: [
-        { host: '192.168.1.101', port: 26379 },
-        { host: '192.168.1.102', port: 26379 },
-        { host: '192.168.1.103', port: 26379 }
-    ],
-    name: 'mymaster'
-});
-```
+Client must use Sentinel-aware driver with multiple Sentinel addresses.
 
 ### Test Steps
 
-#### Step 1: Start Test Client
+#### Step 1: Check Connections
 
 ```bash
-# Run client application with Sentinel configuration
-python3 sentinel_client.py
+redis-cli -h 192.168.1.101 -p 6379 CLIENT LIST
 ```
 
-#### Step 2: Verify Initial Connection
+#### Step 2: Stop Master
 
 ```bash
-# Check client is connected
-redis-cli -h 192.168.1.101 -p 6379 client list | grep <client_ip>
+redis-cli -h 192.168.1.101 -p 6379 SHUTDOWN NOSAVE
 ```
 
-#### Step 3: Trigger Master Failover
+#### Step 3: Monitor Client Reconnection
 
 ```bash
-# Stop current master
-sudo systemctl stop redis  # on master node
-
-# Or trigger manual failover
-redis-cli -h 192.168.1.101 -p 26379 sentinel failover mymaster
+# Watch for clients on new master
+watch -n 1 "redis-cli -h 192.168.1.102 -p 6379 CLIENT LIST"
 ```
 
-#### Step 4: Monitor Client Reconnection
+#### Step 4: Verify Operations Continue
 
 ```bash
-# Watch client logs for:
-# - Connection lost message
-# - Sentinel query for new master
-# - Reconnection to new master
-
-# Check new master for client connection
-redis-cli -h 192.168.1.102 -p 6379 client list
-```
-
-#### Step 5: Verify Operations Continue
-
-```bash
-# Verify client continues operations on new master
-# Check application logs for any errors
+# Check client can write to new master
+redis-cli -h 192.168.1.102 -p 6379 INFO clients
 ```
 
 ### Expected Results
 
-- Client detects connection failure within 1-2 seconds
-- Client queries Sentinel for new master address
-- Successful reconnection within 10 seconds
-- Operations resume on new master
-- No data loss (with proper error handling)
+- [ ] Client detects connection loss
+- [ ] Client queries Sentinel for new master
+- [ ] Client reconnects within 10 seconds
+- [ ] Operations continue on new master
 
 ---
 
-## 17. Test Case 12: Persistence and Recovery
+## 15. Test Case 12: Persistence and Recovery
 
 ### Objective
-Verify data integrity through persistence mechanisms (RDB and AOF) and test recovery from persistence files.
+Verify data integrity through RDB/AOF persistence.
 
-### Severity: MEDIUM
-
-### Expected Outcome
-Data fully recovered from persistence files after restart
+| Attribute | Value |
+|-----------|-------|
+| Severity | MEDIUM |
+| Purpose | Data safety validation |
 
 ### Test Steps
 
-#### Step 1: Check Persistence Configuration
+#### Step 1: Check Persistence Config
 
 ```bash
 redis-cli -h 192.168.1.101 -p 6379 CONFIG GET save
-# RDB snapshots configuration
-
 redis-cli -h 192.168.1.101 -p 6379 CONFIG GET appendonly
-# AOF enabled/disabled
-
-redis-cli -h 192.168.1.101 -p 6379 CONFIG GET appendfsync
-# AOF sync policy
 ```
 
 #### Step 2: Write Test Data
 
 ```bash
-# Write known test data
-redis-cli -h 192.168.1.101 -p 6379 SET persistence:test:1 "data_1"
-redis-cli -h 192.168.1.101 -p 6379 SET persistence:test:2 "data_2"
-redis-cli -h 192.168.1.101 -p 6379 SET persistence:test:3 "data_3"
-
-# Record DBSIZE
+redis-cli -h 192.168.1.101 -p 6379 SET persist:test:1 "data_1"
+redis-cli -h 192.168.1.101 -p 6379 SET persist:test:2 "data_2"
 redis-cli -h 192.168.1.101 -p 6379 DBSIZE
 ```
 
@@ -1452,309 +993,146 @@ redis-cli -h 192.168.1.101 -p 6379 BGSAVE
 # Wait for completion
 redis-cli -h 192.168.1.101 -p 6379 LASTSAVE
 
-# If AOF enabled, trigger rewrite
+# If AOF enabled, rewrite
 redis-cli -h 192.168.1.101 -p 6379 BGREWRITEAOF
 ```
 
-#### Step 4: Simulate Crash and Recovery
+#### Step 4: Simulate Crash
 
 ```bash
-# Force kill Redis (simulating crash)
+# Force kill (crash simulation)
+redis-cli -h 192.168.1.101 -p 6379 DEBUG SEGFAULT
+
+# Or
 sudo kill -9 $(pidof redis-server)
-
-# Verify persistence files exist
-ls -la /var/lib/redis/dump.rdb
-ls -la /var/lib/redis/appendonly.aof
-
-# Restart Redis
-sudo systemctl start redis
 ```
 
-#### Step 5: Verify Data Recovery
+#### Step 5: Restart and Verify
 
 ```bash
-# Check DBSIZE matches pre-crash
-redis-cli -h 192.168.1.101 -p 6379 DBSIZE
+# Start Redis
+redis-server /etc/redis/redis.conf
 
-# Verify test data
-redis-cli -h 192.168.1.101 -p 6379 GET persistence:test:1
-redis-cli -h 192.168.1.101 -p 6379 GET persistence:test:2
-redis-cli -h 192.168.1.101 -p 6379 GET persistence:test:3
+# Verify data recovered
+redis-cli -h 192.168.1.101 -p 6379 DBSIZE
+redis-cli -h 192.168.1.101 -p 6379 GET persist:test:1
+redis-cli -h 192.168.1.101 -p 6379 GET persist:test:2
 ```
 
 ### Expected Results
 
-- All data persisted in RDB/AOF files
-- Data fully recovered after restart
-- DBSIZE matches pre-crash count
-- No data corruption
-
-> **Note**: Data written after last RDB snapshot or AOF sync may be lost. Use `appendfsync always` for minimal data loss (at performance cost).
+- [ ] Data persisted to RDB/AOF
+- [ ] Data fully recovered after restart
+- [ ] No corruption
 
 ---
 
-## 18. Monitoring and Validation Commands
+## 16. Monitoring Commands Reference
 
-### Essential Redis Commands
-
-| Command | Purpose |
-|---------|---------|
-| `INFO` | Comprehensive server information |
-| `INFO replication` | Replication status |
-| `INFO memory` | Memory usage details |
-| `INFO persistence` | RDB/AOF status |
-| `INFO stats` | Server statistics |
-| `CLIENT LIST` | Connected clients |
-| `SLOWLOG GET 10` | Recent slow queries |
-| `DEBUG SLEEP 0.1` | Test client timeout handling |
-
-### Cluster Status Commands
+### Redis Status Commands
 
 ```bash
-# Master information
-redis-cli -h 192.168.1.101 -p 6379 info replication
+# Server info
+redis-cli -h <host> -p 6379 INFO
 
-# Sentinel status
-redis-cli -h 192.168.1.101 -p 26379 sentinel master mymaster
-redis-cli -h 192.168.1.101 -p 26379 sentinel replicas mymaster
-redis-cli -h 192.168.1.101 -p 26379 sentinel sentinels mymaster
+# Replication status
+redis-cli -h <host> -p 6379 INFO replication
 
-# Get current master
-redis-cli -h 192.168.1.101 -p 26379 sentinel get-master-addr-by-name mymaster
+# Memory usage
+redis-cli -h <host> -p 6379 INFO memory
 
-# Check Sentinel state
-redis-cli -h 192.168.1.101 -p 26379 sentinel ckquorum mymaster
+# Persistence status
+redis-cli -h <host> -p 6379 INFO persistence
+
+# Client connections
+redis-cli -h <host> -p 6379 CLIENT LIST
+
+# Database size
+redis-cli -h <host> -p 6379 DBSIZE
+```
+
+### Sentinel Commands
+
+```bash
+# Master info
+redis-cli -h <host> -p 26379 SENTINEL master mymaster
+
+# Get master address
+redis-cli -h <host> -p 26379 SENTINEL get-master-addr-by-name mymaster
+
+# List replicas
+redis-cli -h <host> -p 26379 SENTINEL replicas mymaster
+
+# List Sentinels
+redis-cli -h <host> -p 26379 SENTINEL sentinels mymaster
+
+# Check quorum
+redis-cli -h <host> -p 26379 SENTINEL ckquorum mymaster
+
+# Trigger failover
+redis-cli -h <host> -p 26379 SENTINEL failover mymaster
 ```
 
 ### Health Check Commands
 
 ```bash
-# Basic connectivity
-redis-cli -h 192.168.1.101 -p 6379 PING
+# Ping test
+redis-cli -h <host> -p 6379 PING
 
-# Memory status
-redis-cli -h 192.168.1.101 -p 6379 INFO memory | grep -E "used_memory|maxmemory"
+# Latency test
+redis-cli -h <host> -p 6379 --latency
 
-# Persistence status
-redis-cli -h 192.168.1.101 -p 6379 INFO persistence | grep -E "rdb_|aof_"
-
-# Replication lag
-redis-cli -h 192.168.1.101 -p 6379 INFO replication | grep lag
-
-# Client connections
-redis-cli -h 192.168.1.101 -p 6379 CLIENT LIST | wc -l
-```
-
-### Performance Monitoring
-
-```bash
-# Real-time commands
-redis-cli -h 192.168.1.101 -p 6379 MONITOR  # (Use briefly - high overhead)
-
-# Command statistics
-redis-cli -h 192.168.1.101 -p 6379 INFO commandstats
-
-# Latency monitoring
-redis-cli -h 192.168.1.101 -p 6379 --latency
-redis-cli -h 192.168.1.101 -p 6379 --latency-history
-
-# Memory analysis
-redis-cli -h 192.168.1.101 -p 6379 MEMORY DOCTOR
-redis-cli -h 192.168.1.101 -p 6379 MEMORY STATS
+# Memory doctor
+redis-cli -h <host> -p 6379 MEMORY DOCTOR
 ```
 
 ---
 
-## 19. Common Issues and Troubleshooting
+## 17. Recovery Procedures
 
-| Issue | Symptoms | Resolution |
-|-------|----------|------------|
-| Failover not triggering | Master down but no promotion | Check Sentinel quorum; verify network connectivity |
-| Replication lag | High lag values in INFO replication | Check network bandwidth; reduce write load |
-| Split-brain | Two masters exist | Configure min-replicas-to-write; fix network |
-| Memory full | OOM errors | Increase maxmemory; enable eviction policy |
-| Slow failover | Takes > 60 seconds | Reduce down-after-milliseconds; check network |
-| Client disconnects | Frequent reconnections | Check client timeout settings; enable TCP keepalive |
-| RDB save fails | Background save error | Check disk space; verify permissions |
-| AOF corruption | Redis won't start | Use redis-check-aof to repair |
-| Sentinel not detecting failure | s_down not triggering | Verify Sentinel can reach Redis; check down-after-milliseconds |
-
-### Diagnostic Steps
+### Node Won't Start
 
 ```bash
-# Check Redis logs
-sudo tail -f /var/log/redis/redis.log
-
-# Check Sentinel logs
-sudo tail -f /var/log/redis/sentinel.log
-
-# Check system resources
-free -h
-df -h
-top
-
-# Network connectivity test
-redis-cli -h 192.168.1.101 -p 6379 PING
-redis-cli -h 192.168.1.101 -p 26379 PING
-
-# Check for blocked clients
-redis-cli -h 192.168.1.101 -p 6379 CLIENT LIST | grep blocked
-```
-
----
-
-## 20. Recovery Procedures
-
-### Scenario: Node Won't Start After Crash
-
-```bash
-# 1. Check logs for errors
-sudo journalctl -u redis -n 100
+# Check logs
 sudo tail -100 /var/log/redis/redis.log
 
-# 2. Check persistence files
-ls -la /var/lib/redis/
-
-# 3. If RDB corrupted, try AOF (if enabled)
-redis-server --appendonly yes --dbfilename ""
-
-# 4. If AOF corrupted, repair it
-redis-check-aof --fix /var/lib/redis/appendonly.aof
-
-# 5. If RDB corrupted, check backup
+# Check RDB file
 redis-check-rdb /var/lib/redis/dump.rdb
 
-# 6. Start with empty database if persistence files corrupted
-# (Data will sync from master if this is a replica)
-sudo rm /var/lib/redis/dump.rdb
-sudo rm /var/lib/redis/appendonly.aof
-sudo systemctl start redis
+# Check AOF file
+redis-check-aof /var/lib/redis/appendonly.aof
+
+# Repair AOF if needed
+redis-check-aof --fix /var/lib/redis/appendonly.aof
 ```
 
-### Scenario: Sentinel Not Triggering Failover
+### Force Replica to Master
 
 ```bash
-# 1. Check Sentinel can reach Redis
-redis-cli -h 192.168.1.101 -p 26379 sentinel ckquorum mymaster
+# On the replica you want to promote
+redis-cli -h <replica> -p 6379 REPLICAOF NO ONE
 
-# 2. Verify Sentinel configuration
-redis-cli -h 192.168.1.101 -p 26379 sentinel master mymaster
-
-# 3. Check for s_down detection
-redis-cli -h 192.168.1.101 -p 26379 sentinel master mymaster | grep flags
-
-# 4. If o_down not achieved, check quorum
-# Ensure majority of Sentinels can communicate
-
-# 5. Force failover manually
-redis-cli -h 192.168.1.101 -p 26379 sentinel failover mymaster
+# Point other replicas to new master
+redis-cli -h <other-replica> -p 6379 REPLICAOF <new-master-ip> 6379
 ```
 
-### Scenario: Split-Brain Recovery
+### Reset Sentinel
 
 ```bash
-# 1. Identify which master has latest data
-redis-cli -h 192.168.1.101 -p 6379 INFO replication | grep master_repl_offset
-redis-cli -h 192.168.1.102 -p 6379 INFO replication | grep master_repl_offset
-
-# 2. Stop the old/stale master
-sudo systemctl stop redis  # on stale master
-
-# 3. Ensure correct master is promoted
-redis-cli -h <correct_master> -p 6379 REPLICAOF NO ONE
-
-# 4. Point replicas to correct master
-redis-cli -h <replica> -p 6379 REPLICAOF <correct_master_ip> 6379
-
-# 5. Restart Sentinels to reset state
-sudo systemctl restart redis-sentinel  # on all nodes
-
-# 6. Restart old master as replica
-sudo systemctl start redis  # will join as replica
+# Reset Sentinel state for a master
+redis-cli -h <host> -p 26379 SENTINEL RESET mymaster
 ```
 
-### Scenario: Complete Cluster Recovery
+### Remove Failed Node from Sentinel
 
 ```bash
-# If all nodes are down:
-
-# 1. Start master first
-sudo systemctl start redis  # on master node
-
-# 2. Verify master is up
-redis-cli -h 192.168.1.101 -p 6379 PING
-
-# 3. Start replicas
-sudo systemctl start redis  # on replica nodes
-
-# 4. Verify replication
-redis-cli -h 192.168.1.101 -p 6379 INFO replication
-
-# 5. Start Sentinels
-sudo systemctl start redis-sentinel  # on all nodes
-
-# 6. Verify Sentinel cluster
-redis-cli -h 192.168.1.101 -p 26379 sentinel master mymaster
+# Sentinel will auto-remove after timeout
+# Or restart Sentinels to refresh state
 ```
 
 ---
 
-## 21. Best Practices for Production
-
-### Cluster Configuration
-
-- Use odd number of Sentinel nodes (3 or 5) for proper quorum
-- Configure `min-replicas-to-write 1` to prevent split-brain writes
-- Set `min-replicas-max-lag 10` for replication safety
-- Enable both RDB and AOF for data safety
-- Use `appendfsync everysec` for balance of safety and performance
-
-### Monitoring
-
-- Implement comprehensive monitoring (Prometheus + Grafana)
-- Set up alerts for:
-  - Replication lag > 10 seconds
-  - Memory usage > 80%
-  - Connection count spikes
-  - Failover events
-- Monitor Sentinel logs for failover events
-- Track slow queries with SLOWLOG
-
-### Client Applications
-
-- Use Sentinel-aware drivers (not direct Redis connections)
-- Implement retry logic with exponential backoff
-- Set appropriate connection timeouts
-- Use connection pooling
-- Handle failover gracefully with proper error handling
-
-### Resource Management
-
-- Set appropriate `maxmemory` limit (leave 30% for overhead)
-- Configure eviction policy based on use case
-- Monitor and rotate logs regularly
-- Use SSDs for persistence files
-- Plan for 2x peak load capacity
-
-### Disaster Recovery
-
-- Regular backup of RDB files to remote storage
-- Test restore procedures quarterly
-- Document all recovery procedures
-- Maintain runbooks for common scenarios
-- Keep configuration in version control
-
-### Maintenance
-
-- Use rolling restarts for updates
-- Trigger manual failover before master maintenance
-- Schedule maintenance during low-traffic periods
-- Test changes in staging first
-- Keep Redis and OS up to date
-
----
-
-## 22. Test Results Template
+## 18. Test Results Template
 
 ### Test Execution Record
 
@@ -1762,164 +1140,53 @@ redis-cli -h 192.168.1.101 -p 26379 sentinel master mymaster
 |-------|-------|
 | Test Date | |
 | Tester Name | |
-| Environment | Test / Staging / Production |
+| Environment | |
 | Redis Version | |
-| Cluster Configuration | 1 Master + 2 Replicas + 3 Sentinels |
 | Sentinel Quorum | 2 |
+| Cluster Size | 3 nodes |
 
-### Test Case Results
+### Test Results
 
-| Test Case | Status | Duration | Message Loss | Notes |
-|-----------|--------|----------|--------------|-------|
-| TC1: Master Node Failure | Pass/Fail | | | |
-| TC2: Replica Node Failure | Pass/Fail | | N/A | |
-| TC3: Sentinel Node Failure | Pass/Fail | | N/A | |
-| TC4: Network Partition | Pass/Fail | | | |
-| TC5: Graceful Shutdown | Pass/Fail | | | |
-| TC6: Multiple Node Failure | Pass/Fail | | | |
-| TC7: Disk Space Exhaustion | Pass/Fail | | | |
-| TC8: Memory Exhaustion | Pass/Fail | | | |
-| TC9: Rolling Restart | Pass/Fail | | | |
-| TC10: Data Replication | Pass/Fail | | N/A | |
-| TC11: Client Failover | Pass/Fail | | | |
-| TC12: Persistence Recovery | Pass/Fail | | | |
+| Test Case | Status | Failover Time | Data Loss | Notes |
+|-----------|--------|---------------|-----------|-------|
+| TC1: Master Node Failure | | | | |
+| TC2: Replica Node Failure | | | | |
+| TC3: Sentinel Node Failure | | | | |
+| TC4: Network Partition | | | | |
+| TC5: Graceful Shutdown | | | | |
+| TC6: Quorum Loss | | | | |
+| TC7: Disk Alarm | | | | |
+| TC8: Memory Exhaustion | | | | |
+| TC9: Rolling Restart | | | | |
+| TC10: Replication Validation | | | | |
+| TC11: Client Failover | | | | |
+| TC12: Persistence Recovery | | | | |
 
 ### Success Criteria
 
-- All automated failovers complete within expected time (< 30 seconds)
-- Data loss is zero or within acceptable limits (< 0.1%)
-- Cluster recovers to full health after each test
-- No manual intervention required for automatic scenarios
-- Clients reconnect successfully within 10 seconds
-- Monitoring and alerting triggered appropriately
-- All recovery procedures documented and tested
-
-### Issues Found
-
-| Issue # | Description | Severity | Resolution |
-|---------|-------------|----------|------------|
-| 1 | | High/Medium/Low | |
-| 2 | | High/Medium/Low | |
-| 3 | | High/Medium/Low | |
-
-### Overall Assessment
-
-**Result**: [ ] Pass  [ ] Fail  [ ] Pass with Conditions
-
-### Recommendations
-
-[List any recommendations for improvement]
+- [ ] Failover completes within 30 seconds
+- [ ] No data loss for acknowledged writes
+- [ ] Cluster recovers automatically
+- [ ] Quorum maintained with 1 node failure
+- [ ] Clients reconnect within 10 seconds
 
 ---
 
-## Appendix: Sample Test Scripts
+## Quick Reference: Key Commands
 
-### Python Failover Test Script
-
-```python
-#!/usr/bin/env python3
-"""
-Redis Sentinel Failover Test Script
-"""
-
-import time
-import redis
-from redis.sentinel import Sentinel
-
-def test_failover():
-    sentinel = Sentinel([
-        ('192.168.1.101', 26379),
-        ('192.168.1.102', 26379),
-        ('192.168.1.103', 26379)
-    ], socket_timeout=0.5)
-
-    master = sentinel.master_for('mymaster', socket_timeout=0.5)
-
-    # Get current master
-    master_addr = sentinel.discover_master('mymaster')
-    print(f"Current master: {master_addr}")
-
-    # Write test data
-    counter = 0
-    errors = 0
-
-    print("Starting write loop (Ctrl+C to stop)...")
-    try:
-        while True:
-            try:
-                master.incr('failover:test:counter')
-                counter += 1
-                if counter % 100 == 0:
-                    print(f"Writes: {counter}, Errors: {errors}")
-            except redis.exceptions.ConnectionError as e:
-                errors += 1
-                print(f"Connection error (will retry): {e}")
-                time.sleep(0.5)
-                master = sentinel.master_for('mymaster', socket_timeout=0.5)
-            except redis.exceptions.ReadOnlyError:
-                print("Read-only error - failover in progress")
-                time.sleep(1)
-                master = sentinel.master_for('mymaster', socket_timeout=0.5)
-
-            time.sleep(0.1)
-    except KeyboardInterrupt:
-        print(f"\nFinal stats: Writes={counter}, Errors={errors}")
-        final_value = master.get('failover:test:counter')
-        print(f"Final counter value: {final_value}")
-
-if __name__ == '__main__':
-    test_failover()
-```
-
-### Bash Monitoring Script
-
-```bash
-#!/bin/bash
-# Redis Cluster Health Monitor
-
-MASTER_HOST="192.168.1.101"
-REPLICA1_HOST="192.168.1.102"
-REPLICA2_HOST="192.168.1.103"
-SENTINEL_PORT=26379
-REDIS_PORT=6379
-
-echo "=== Redis Cluster Health Check ==="
-echo "Timestamp: $(date)"
-echo ""
-
-# Check Sentinel
-echo "=== Sentinel Status ==="
-redis-cli -h $MASTER_HOST -p $SENTINEL_PORT sentinel master mymaster 2>/dev/null | grep -E "ip|port|flags|num-slaves"
-echo ""
-
-# Get current master
-CURRENT_MASTER=$(redis-cli -h $MASTER_HOST -p $SENTINEL_PORT sentinel get-master-addr-by-name mymaster 2>/dev/null | head -1)
-echo "Current Master: $CURRENT_MASTER"
-echo ""
-
-# Check replication
-echo "=== Replication Status ==="
-redis-cli -h $CURRENT_MASTER -p $REDIS_PORT info replication 2>/dev/null | grep -E "role|connected_slaves|slave|offset|lag"
-echo ""
-
-# Check memory
-echo "=== Memory Usage ==="
-for host in $MASTER_HOST $REPLICA1_HOST $REPLICA2_HOST; do
-    MEM=$(redis-cli -h $host -p $REDIS_PORT info memory 2>/dev/null | grep "used_memory_human" | cut -d: -f2)
-    echo "$host: $MEM"
-done
-echo ""
-
-# Check connectivity
-echo "=== Connectivity ==="
-for host in $MASTER_HOST $REPLICA1_HOST $REPLICA2_HOST; do
-    PING=$(redis-cli -h $host -p $REDIS_PORT ping 2>/dev/null)
-    echo "$host Redis: $PING"
-    PING=$(redis-cli -h $host -p $SENTINEL_PORT ping 2>/dev/null)
-    echo "$host Sentinel: $PING"
-done
-```
+| Action | Command |
+|--------|---------|
+| Get master | `redis-cli -p 26379 SENTINEL get-master-addr-by-name mymaster` |
+| Check quorum | `redis-cli -p 26379 SENTINEL ckquorum mymaster` |
+| Manual failover | `redis-cli -p 26379 SENTINEL failover mymaster` |
+| Replication status | `redis-cli -p 6379 INFO replication` |
+| Shutdown (save) | `redis-cli -p 6379 SHUTDOWN SAVE` |
+| Shutdown (no save) | `redis-cli -p 6379 SHUTDOWN NOSAVE` |
+| Make replica | `redis-cli -p 6379 REPLICAOF <ip> <port>` |
+| Promote to master | `redis-cli -p 6379 REPLICAOF NO ONE` |
+| Background save | `redis-cli -p 6379 BGSAVE` |
+| Memory info | `redis-cli -p 6379 INFO memory` |
 
 ---
 
-*Document Version: 1.0 | Last Updated: January 2026*
+*Document Version: 2.0 | Last Updated: January 2026*
